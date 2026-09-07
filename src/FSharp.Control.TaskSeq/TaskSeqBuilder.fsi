@@ -18,12 +18,6 @@ module Internal =
     /// </summary>
     val initVerbose: unit -> bool
 
-    /// Call MoveNext on an IAsyncStateMachine by reference
-    val inline moveNextRef: x: byref<#IAsyncStateMachine> -> unit
-
-    /// F# requires that we implement interfaces even on an abstract class.
-    val inline raiseNotImpl: unit -> 'a
-
 /// <summary>
 /// Represents a task sequence and is the output of using the <paramref name="taskSeq{...}" />
 /// computation expression from this library. It is an alias for <see cref="T:System.IAsyncEnumerable&lt;_>" />.
@@ -40,156 +34,155 @@ type taskSeq<'T> = IAsyncEnumerable<'T>
 /// </summary>
 type TaskSeq<'T> = IAsyncEnumerable<'T>
 
-/// TaskSeqCode type alias of ResumableCode delegate type, specially recognized by the F# compiler
-and ResumableTSC<'T> = ResumableCode<TaskSeqStateMachineData<'T>, unit>
+/// <summary>
+/// The result of a single step of the producer side of a task sequence,
+/// communicated to the consumer through a rendezvous handshake.
+/// For use by this library only, should not be used directly in user code.
+/// </summary>
+[<NoComparison; NoEquality>]
+type TaskSeqEvent<'T> =
+    | Item of 'T
+    | Completed
+    | Faulted of exn
 
 /// <summary>
-/// Contains the state data for the <see cref="taskSeq" /> computation expression builder.
-/// For use in this library only. Required by the <see cref="TaskSeqBuilder.Run" /> method.
+/// Marker exception used to unwind the producer when the enumerator is disposed
+/// before the sequence completed. It is caught by the producer wrapper and never
+/// escapes the library. For use by this library only, should not be used directly in user code.
 /// </summary>
-and TaskSeqStateMachine<'T> = ResumableStateMachine<TaskSeqStateMachineData<'T>>
-and TaskSeqResumptionFunc<'T> = ResumptionFunc<TaskSeqStateMachineData<'T>>
-and TaskSeqResumptionDynamicInfo<'T> = ResumptionDynamicInfo<TaskSeqStateMachineData<'T>>
+[<NoComparison; NoEquality>]
+type TaskSeqDisposal =
+    inherit Exception
+    new: unit -> TaskSeqDisposal
 
 /// <summary>
-/// Contains the state data for the <see cref="taskSeq" /> computation expression builder.
-/// For use in this library only. Required by the <see cref="TaskSeqBuilder.Run" /> method.
+/// A one-shot awaitable signal used for the producer/consumer handshake,
+/// based on <see cref="T:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore&lt;_>" />.
+/// For use by this library only, should not be used directly in user code.
 /// </summary>
-and [<Class; NoComparison; NoEquality>] TaskSeqStateMachineData<'T> =
+[<NoComparison; NoEquality>]
+type TaskSeqSignal<'T> =
+    interface IValueTaskSource<'T>
 
-    new: unit -> TaskSeqStateMachineData<'T>
+    new: unit -> TaskSeqSignal<'T>
 
-    [<DefaultValue(false)>]
-    val mutable cancellationToken: CancellationToken
-
-    /// Keeps track of the objects that need to be disposed off on IAsyncDispose.
-    [<DefaultValue(false)>]
-    val mutable disposalStack: ResizeArray<(unit -> Task)>
-
-    [<DefaultValue(false)>]
-    val mutable awaiter: ICriticalNotifyCompletion
-
-    [<DefaultValue(false)>]
-    val mutable promiseOfValueOrEnd: ManualResetValueTaskSourceCore<bool>
-
-    /// Helper struct providing methods for awaiting 'next' in async iteration scenarios.
-    [<DefaultValue(false)>]
-    val mutable builder: AsyncIteratorMethodBuilder
-
-    /// Whether or not a full iteration through the IAsyncEnumerator has completed
-    [<DefaultValue(false)>]
-    val mutable completed: bool
-
-    /// Used by the AsyncEnumerator interface to return the Current value when
-    /// IAsyncEnumerator.Current is called
-    [<DefaultValue(false)>]
-    val mutable current: ValueOption<'T>
-
-    /// A reference to 'self', because otherwise we can't use byref in the resumable code.
-    [<DefaultValue(false)>]
-    val mutable boxedSelf: TaskSeqBase<'T>
-
-    member PopDispose: unit -> unit
-
-    member PushDispose: disposer: (unit -> Task) -> unit
+    member WaitAsync: unit -> ValueTask<'T>
+    member SetResult: value: 'T -> unit
+    member Reset: unit -> unit
 
 /// <summary>
-/// Abstract base class for <see cref="TaskSeq&lt;'Machine, 'T&gt;" />.
-/// For use by this library only, should not be used directly in user code. Its operation depends highly on resumable state.
+/// State shared between the producer (the <c>taskSeq</c> computation) and the consumer
+/// (the <see cref="T:System.Collections.Generic.IAsyncEnumerator&lt;_>" />) of a task sequence.
+/// For use by this library only, should not be used directly in user code.
 /// </summary>
-and [<AbstractClass; NoEquality; NoComparison>] TaskSeqBase<'T> =
-    interface IValueTaskSource<bool>
-    interface IValueTaskSource
-    interface IAsyncStateMachine
+[<NoComparison; NoEquality>]
+type TaskSeqState<'T> =
+
+    {
+        /// Consumer -> Producer: set by MoveNextAsync to request the next item.
+        MoveNextRequest: TaskSeqSignal<unit>
+        /// Producer -> Consumer: set by the producer to publish the next item, completion or failure.
+        ItemResponse: TaskSeqSignal<TaskSeqEvent<'T>>
+        CancellationToken: CancellationToken
+        /// Set by DisposeAsync to unwind the producer, running pending compensations.
+        mutable DisposalRequested: bool
+    }
+
+/// <summary>
+/// Helpers operating on <see cref="TaskSeqState&lt;_&gt;" />. These are deliberately not inline:
+/// they are used from inline builder member bodies, and keeping the publish/check operations
+/// behind ordinary function calls keeps the inline fragments in a shape the runtime-async
+/// compiler analysis accepts.
+/// For use by this library only, should not be used directly in user code.
+/// </summary>
+module TaskSeqState =
+
+    val create: cancellationToken: CancellationToken -> TaskSeqState<'T>
+    val publishItem: state: TaskSeqState<'T> -> item: 'T -> unit
+    val publishCompleted: state: TaskSeqState<'T> -> unit
+    val publishFaulted: state: TaskSeqState<'T> -> error: exn -> unit
+
+    /// Raise the disposal sentinel exception.
+    val raiseDisposalRequested: unit -> 'a
+
+    /// Reset the request signal after the consumer asked for the next item,
+    /// and raise the disposal sentinel if the enumerator was disposed in the meantime.
+    val resetAfterMoveNextRequest: state: TaskSeqState<'T> -> unit
+
+/// <summary>
+/// The body of a <c>taskSeq</c> computation: a function that runs the computation against the
+/// shared producer/consumer state. Values of this type only occur inline, inside a runtime-async
+/// producer method. For use by this library only, should not be used directly in user code.
+/// </summary>
+type TaskSeqCode<'T> = TaskSeqState<'T> -> unit
+
+/// <summary>
+/// The producer side of a task sequence. Implements <see cref="T:System.Collections.Generic.IAsyncEnumerable&lt;_>" />
+/// by starting the producer computation for each new enumerator.
+/// For use by this library only, should not be used directly in user code.
+/// </summary>
+[<Struct; NoComparison; NoEquality>]
+type TaskSeqEnumerable<'T> =
     interface IAsyncEnumerable<'T>
-    interface IAsyncEnumerator<'T>
 
-    new: unit -> TaskSeqBase<'T>
+    new: runProducer: (TaskSeqState<'T> -> Task<unit>) -> TaskSeqEnumerable<'T>
 
-    abstract MoveNextAsyncResult: unit -> ValueTask<bool>
-
-/// <summary>
-/// Main implementation of generic <see cref="T:System.IAsyncEnumerable&lt;'T&gt;" /> and related interfaces,
-/// which forms the meat of the logic behind <see cref="taskSeq" /> computation expresssions.
-/// For use by this library only, should not be used directly in user code. Its operation depends highly on resumable state.
-/// </summary>
-and [<NoComparison; NoEquality>] TaskSeq<'Machine, 'T
-    when 'Machine :> IAsyncStateMachine and 'Machine :> IResumableStateMachine<TaskSeqStateMachineData<'T>>> =
-    inherit TaskSeqBase<'T>
-    interface IAsyncEnumerator<'T>
-    interface IAsyncEnumerable<'T>
-    interface IAsyncStateMachine
-    interface IValueTaskSource<bool>
-    interface IValueTaskSource
-
-    new: unit -> TaskSeq<'Machine, 'T>
-
-    [<DefaultValue(false)>]
-    val mutable _initialMachine: 'Machine
-
-    /// Keeps the active state machine.
-    [<DefaultValue(false)>]
-    val mutable _machine: 'Machine
-
-    //new: unit -> TaskSeq<'Machine, 'T>
-    member InitMachineData: ct: CancellationToken * machine: byref<'Machine> -> unit
-    override MoveNextAsyncResult: unit -> ValueTask<bool>
+    member RunProducer: state: TaskSeqState<'T> -> Task<unit>
 
 /// <summary>
-/// Concrete implementation of <see cref="TaskSeqResumptionDynamicInfo&lt;'T&gt;" /> for <c>taskSeq</c> computation
-/// expressions, used in the dynamic (FSI) path. Handles state-machine transitions when the F# compiler
-/// cannot generate static resumable code.
-/// For use by this library only.
-/// </summary>
-and [<NoComparison; NoEquality>] TaskSeqDynamicInfo<'T> =
-    inherit TaskSeqResumptionDynamicInfo<'T>
-    new: initialResumptionFunc: TaskSeqResumptionFunc<'T> -> TaskSeqDynamicInfo<'T>
-
-/// <summary>
-/// Dynamic (FSI-compatible) implementation of <see cref="IAsyncEnumerable&lt;'T&gt;" /> for <c>taskSeq</c>
-/// computation expressions. Used when the F# compiler cannot generate static resumable code (e.g., in FSI).
-/// For use by this library only.
-/// </summary>
-and [<NoComparison; NoEquality>] TaskSeqDynamic<'T> =
-    inherit TaskSeqBase<'T>
-    interface IAsyncEnumerator<'T>
-    interface IAsyncEnumerable<'T>
-    interface IAsyncStateMachine
-    interface IValueTaskSource<bool>
-    interface IValueTaskSource
-
-    new: unit -> TaskSeqDynamic<'T>
-
-    [<DefaultValue(false)>]
-    val mutable _machine: TaskSeqStateMachine<'T>
-
-    [<DefaultValue(false)>]
-    val mutable _initialResumptionFunc: TaskSeqResumptionFunc<'T>
-
-    member InitDynamicMachineData: ct: CancellationToken -> unit
-    override MoveNextAsyncResult: unit -> ValueTask<bool>
-
-/// <summary>
-/// Main builder class for the <see cref="taskSeq" /> computation expression.
+/// Main builder class for the <see cref="taskSeq" /> computation expression, implemented
+/// with runtime-async compiler intrinsics.
 /// </summary>
 [<Class>]
 type TaskSeqBuilder =
 
-    member inline Combine: task1: ResumableTSC<'T> * task2: ResumableTSC<'T> -> ResumableTSC<'T>
-    member inline Delay: f: (unit -> ResumableTSC<'T>) -> ResumableTSC<'T>
-    member inline Run: code: ResumableTSC<'T> -> TaskSeq<'T>
-    member inline TryFinally: body: ResumableTSC<'T> * compensationAction: (unit -> unit) -> ResumableTSC<'T>
-    member inline TryFinallyAsync: body: ResumableTSC<'T> * compensationAction: (unit -> Task) -> ResumableTSC<'T>
-    member inline TryWith: body: ResumableTSC<'T> * catch: (exn -> ResumableTSC<'T>) -> ResumableTSC<'T>
+    member inline Delay: generator: (unit -> TaskSeqCode<'T>) -> TaskSeqCode<'T>
+    member inline Run: code: TaskSeqCode<'T> -> TaskSeq<'T>
+    member inline Zero: unit -> TaskSeqCode<'T>
+    member inline ReturnFrom: task: Task -> TaskSeqCode<'T>
+    member inline ReturnFrom: task: Task<'U> -> TaskSeqCode<'T>
+    member inline ReturnFrom: task: ValueTask -> TaskSeqCode<'T>
+    member inline ReturnFrom: task: ValueTask<'U> -> TaskSeqCode<'T>
+    member inline ReturnFrom: computation: Async<'U> -> TaskSeqCode<'T>
+
+    member inline Bind: task: Task<'U> * continuation: ('U -> TaskSeqCode<'T>) -> TaskSeqCode<'T>
+    member inline Bind: task: ValueTask<'U> * continuation: ('U -> TaskSeqCode<'T>) -> TaskSeqCode<'T>
+    member inline Bind: computation: Async<'U> * continuation: ('U -> TaskSeqCode<'T>) -> TaskSeqCode<'T>
+
+    member inline Combine: task1: TaskSeqCode<'T> * task2: TaskSeqCode<'T> -> TaskSeqCode<'T>
+    member inline TryFinally: body: TaskSeqCode<'T> * compensationAction: (unit -> unit) -> TaskSeqCode<'T>
+    member inline TryFinallyAsync: body: TaskSeqCode<'T> * compensationAction: (unit -> Task) -> TaskSeqCode<'T>
+    member inline TryWith: body: TaskSeqCode<'T> * catch: (exn -> TaskSeqCode<'T>) -> TaskSeqCode<'T>
 
     member inline Using:
-        disp: 'Disp * body: ('Disp -> ResumableTSC<'T>) -> ResumableTSC<'T> when 'Disp :> IAsyncDisposable
+        resource: 'Resource * body: ('Resource -> TaskSeqCode<'T>) -> TaskSeqCode<'T>
 
-    member inline While: condition: (unit -> bool) * body: ResumableTSC<'T> -> ResumableTSC<'T>
-    /// Used by `For`. F# currently doesn't support `while!`, so this cannot be called directly from the CE
-    member inline WhileAsync: condition: (unit -> ValueTask<bool>) * body: ResumableTSC<'T> -> ResumableTSC<'T>
-    member inline Yield: value: 'T -> ResumableTSC<'T>
-    member inline Zero: unit -> ResumableTSC<'T>
+    member inline While: condition: (unit -> bool) * body: TaskSeqCode<'T> -> TaskSeqCode<'T>
+    /// Used by `For`. Unclear if `while!` (from F# 8.0) hits this
+    member inline WhileAsync: condition: (unit -> ValueTask<bool>) * body: TaskSeqCode<'T> -> TaskSeqCode<'T>
+    member inline For: sequence: seq<'TElement> * body: ('TElement -> TaskSeqCode<'T>) -> TaskSeqCode<'T>
+    member inline For: source: #TaskSeq<'TElement> * body: ('TElement -> TaskSeqCode<'T>) -> TaskSeqCode<'T>
+    member inline Yield: value: 'T -> TaskSeqCode<'T>
+    member inline YieldFrom: source: seq<'T> -> TaskSeqCode<'T>
+    member inline YieldFrom: source: #TaskSeq<'T> -> TaskSeqCode<'T>
+
+/// <summary>
+/// Contains extension methods for the main builder class for the <see cref="taskSeq" /> computation expression.
+/// This module is not meant to be accessed directly from user code.
+/// </summary>
+[<AutoOpen>]
+module TaskSeqAwaitableExtensions =
+
+    type TaskSeqBuilder with
+
+        /// <summary>Lowest-priority SRTP fallback for binding custom awaitables (task-like types).</summary>
+        [<NoEagerConstraintApplication>]
+        member inline Bind< ^TaskLike, 'T, 'U, ^Awaiter> :
+            task: ^TaskLike * continuation: ('T -> TaskSeqCode<'U>) -> TaskSeqCode<'U>
+                when ^TaskLike: (member GetAwaiter: unit -> ^Awaiter)
+                and ^Awaiter :> ICriticalNotifyCompletion
+                and ^Awaiter: (member get_IsCompleted: unit -> bool)
+                and ^Awaiter: (member GetResult: unit -> 'T)
 
 [<AutoOpen>]
 module TaskSeqBuilder =
@@ -200,56 +193,9 @@ module TaskSeqBuilder =
     val taskSeq: TaskSeqBuilder
 
 /// <summary>
-/// Contains low priority extension methods for the main builder class for the <see cref="taskSeq" /> computation expression.
-/// The <see cref="LowPriority" />, <see cref="MediumPriority" /> and <see cref="HighPriority" /> modules are not meant to be
-/// accessed directly from user code. They solely serve to disambiguate overload resolution inside the <see cref="taskSeq" /> computation expression.
-/// </summary>
-[<AutoOpen>]
-module LowPriority =
-    type TaskSeqBuilder with
-
-        [<NoEagerConstraintApplication>]
-        member inline Bind< ^TaskLike, 'T, 'U, ^Awaiter> :
-            task: ^TaskLike * continuation: ('T -> ResumableTSC<'U>) -> ResumableTSC<'U>
-                when ^TaskLike: (member GetAwaiter: unit -> ^Awaiter)
-                and ^Awaiter :> ICriticalNotifyCompletion
-                and ^Awaiter: (member get_IsCompleted: unit -> bool)
-                and ^Awaiter: (member GetResult: unit -> 'T)
-
-/// <summary>
-/// Contains low priority extension methods for the main builder class for the <see cref="taskSeq" /> computation expression.
-/// The <see cref="LowPriority" />, <see cref="MediumPriority" /> and <see cref="HighPriority" /> modules are not meant to be
-/// accessed directly from user code. They solely serve to disambiguate overload resolution inside the <see cref="taskSeq" /> computation expression.
-/// </summary>
-[<AutoOpen>]
-module MediumPriority =
-    type TaskSeqBuilder with
-
-        // NOTE: syntax with '#Disposable' won't work properly in FSI
-        member inline Using:
-            dispensation: 'Disp * body: ('Disp -> ResumableTSC<'T>) -> ResumableTSC<'T> when 'Disp :> IDisposable
-
-        member inline For: sequence: seq<'TElement> * body: ('TElement -> ResumableTSC<'T>) -> ResumableTSC<'T>
-        member inline YieldFrom: source: seq<'T> -> ResumableTSC<'T>
-        member inline For: source: #TaskSeq<'TElement> * body: ('TElement -> ResumableTSC<'T>) -> ResumableTSC<'T>
-        member inline YieldFrom: source: TaskSeq<'T> -> ResumableTSC<'T>
-
-/// <summary>
-/// Contains low priority extension methods for the main builder class for the <see cref="taskSeq" /> computation expression.
-/// The <see cref="LowPriority" />, <see cref="MediumPriority" /> and <see cref="HighPriority" /> modules are not meant to be
-/// accessed directly from user code. They solely serve to disambiguate overload resolution inside the <see cref="taskSeq" /> computation expression.
-/// </summary>
-[<AutoOpen>]
-module HighPriority =
-    type TaskSeqBuilder with
-
-        member inline Bind: task: Task<'T> * continuation: ('T -> ResumableTSC<'U>) -> ResumableTSC<'U>
-        member inline Bind: computation: Async<'T> * continuation: ('T -> ResumableTSC<'U>) -> ResumableTSC<'U>
-
-/// <summary>
 /// Builder class for the <see cref="taskSeqDynamic" /> computation expression. Inherits all members
-/// from <see cref="TaskSeqBuilder" />, using the dynamic resumable code path as fallback when the
-/// F# compiler cannot generate static resumable code (e.g., in F# Interactive / FSI).
+/// from <see cref="TaskSeqBuilder" />. With the runtime-async implementation there is no separate
+/// dynamic (FSI) code path; the same builder works in both compiled and interpreted scenarios.
 /// </summary>
 [<Class>]
 type TaskSeqDynamicBuilder =
@@ -260,7 +206,8 @@ type TaskSeqDynamicBuilder =
 module TaskSeqDynamicBuilder =
 
     /// <summary>
-    /// Builds an asynchronous task sequence, with a dynamic resumable code fallback for scenarios
-    /// where the F# compiler cannot generate static resumable code (e.g., in F# Interactive / FSI).
+    /// Builds an asynchronous task sequence. Historically this used a dynamic resumable code fallback
+    /// for scenarios where the F# compiler cannot generate static resumable code (e.g., in F# Interactive / FSI).
+    /// With runtime-async intrinsics, this behaves the same as <see cref="taskSeq" />.
     /// </summary>
     val taskSeqDynamic: TaskSeqDynamicBuilder

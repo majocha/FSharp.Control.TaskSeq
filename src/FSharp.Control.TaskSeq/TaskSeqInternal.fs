@@ -1492,6 +1492,31 @@ module internal TaskSeqInternal =
                 raiseOutOfBounds (nameof index)
         }
 
+    // Core of 'except', split out because the runtime-async compiler analysis currently
+    // rejects a 'use' combined with a 'while!' loop under an 'if' inside a taskSeq CE.
+    let private exceptCore (itemsToExclude: TaskSeq<'T>) (e: IAsyncEnumerator<'T>) : TaskSeq<'T> =
+        taskSeq {
+            // only create hashset by the time we actually start iterating;
+            // taskSeq enumerates sequentially, so a plain HashSet suffices — no locking needed.
+            let hashSet = HashSet<_>(HashIdentity.Structural)
+
+            use excl = itemsToExclude.GetAsyncEnumerator CancellationToken.None
+
+            while! excl.MoveNextAsync() do
+                hashSet.Add excl.Current |> ignore
+
+            // if true, it was added, and therefore unique, so we return it
+            // if false, it existed, and therefore a duplicate, and we skip
+            if hashSet.Add e.Current then
+                yield e.Current
+
+            while! e.MoveNextAsync() do
+                let current = e.Current
+
+                if hashSet.Add current then
+                    yield current
+        }
+
     let except (itemsToExclude: TaskSeq<_>) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
         checkNonNull (nameof itemsToExclude) itemsToExclude
@@ -1501,26 +1526,7 @@ module internal TaskSeqInternal =
             let! hasFirst = e.MoveNextAsync()
 
             if hasFirst then
-                // only create hashset by the time we actually start iterating;
-                // taskSeq enumerates sequentially, so a plain HashSet suffices — no locking needed.
-                let hashSet = HashSet<_>(HashIdentity.Structural)
-
-                use excl = itemsToExclude.GetAsyncEnumerator CancellationToken.None
-
-                while! excl.MoveNextAsync() do
-                    hashSet.Add excl.Current |> ignore
-
-                // if true, it was added, and therefore unique, so we return it
-                // if false, it existed, and therefore a duplicate, and we skip
-                if hashSet.Add e.Current then
-                    yield e.Current
-
-                while! e.MoveNextAsync() do
-                    let current = e.Current
-
-                    if hashSet.Add current then
-                        yield current
-
+                yield! exceptCore itemsToExclude e
         }
 
     let exceptOfSeq itemsToExclude (source: TaskSeq<_>) =

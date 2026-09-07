@@ -2,6 +2,7 @@
 Release notes:
 
 Unreleased
+    - BREAKING/experimental: reimplement the `taskSeq` computation expression builder on runtime-async compiler intrinsics (dotnet/fsharp#20235, requires the preview compiler and matching FSharp.Core from that PR, targets net11.0). The builder is now a synchronous, inline fragment pipeline; disposal of `use`/`try...finally` compensations on early enumerator disposal works by resuming and unwinding the producer instead of a disposal stack. Disposing an enumerator now waits for the producer to unwind.
     - tests: add coverage for side-effect re-execution semantics when re-enumerating a `taskSeq` with independent `CancellationToken`s
     - test: add TaskSeq.Issue452.Tests.fs, regression tests wrapping an externally-produced IAsyncEnumerable<'T> (TaskSeq.map and `taskSeq { for .. in .. do yield .. }`) while running on a custom, single-threaded TaskScheduler; investigates #452's reported duplicated-final-item bug, which could not be reproduced outside of Orleans, see #452
     - adds TaskSeq.tryMax and TaskSeq.tryMin: safe variants of TaskSeq.max and TaskSeq.min that return None instead of raising ArgumentException when the input sequence is empty

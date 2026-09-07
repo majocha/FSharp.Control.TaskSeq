@@ -1,8 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+    <!-- Use the runtime-async FSharp.Core built from dotnet/fsharp PR #20235 -->
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
   </PropertyGroup>
 
   <ItemGroup>
@@ -86,12 +88,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Runtime-async requires the FSharp.Core built from dotnet/fsharp PR #20235 -->
+    <Reference Include="FSharp.Core">
+      <HintPath>D:\runtime-async-bits\FSharp.Core\Release\net10.0\FSharp.Core.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
     <!--
-      Align test project with minimal required version for TaskSeq, which is 6.0.1 at the moment.
-      This updates the default reference (which is the highest stable version) to be the oldest,
-      still compatible version of the TaskSeq library.
+      FsUnit.xUnit drags in FSharp.Core 5.0.2 transitively, which would win reference
+      unification over the local runtime-async FSharp.Core. Override the transitive
+      package with a direct reference that contributes no assemblies.
     -->
-    <PackageReference Update="FSharp.Core" Version="6.0.1" />
+    <PackageReference Include="FSharp.Core" Version="[10.0.100]" ExcludeAssets="all" />
     <PackageReference Include="FsUnit.xUnit" Version="6.0.1" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.4.0" />
     <PackageReference Include="xunit" Version="2.9.3" />

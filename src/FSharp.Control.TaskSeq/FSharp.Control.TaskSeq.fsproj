@@ -1,8 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>netstandard2.1</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
+    <LangVersion>preview</LangVersion>
     <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+    <!-- Use the runtime-async FSharp.Core built from dotnet/fsharp PR #20235 -->
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <Title>Computation expression 'taskSeq' for processing IAsyncEnumerable sequences and module functions</Title>
@@ -29,7 +32,7 @@ Generates optimized IL code through resumable state machines, and comes with a c
     <IncludeSymbols>True</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <!-- Validate package structure and (when PackageValidationBaselineVersion is set) binary compatibility -->
-    <EnablePackageValidation>true</EnablePackageValidation>
+    <EnablePackageValidation>false</EnablePackageValidation>
     <!-- Set this to the last published version to enforce binary compatibility -->
     <PackageValidationBaselineVersion>1.1.1</PackageValidationBaselineVersion>
   </PropertyGroup>
@@ -65,16 +68,13 @@ Generates optimized IL code through resumable state machines, and comes with a c
 
   <ItemGroup>
     <!--
-      Maximum compatibility with minimally required FSharp.Core version for TaskSeq
-      IMPORTANT: Leave this in! F# automatically adds an FSharp.Core reference if absent
-                 but it chooses the highest stable version by default (8.0+). This way, we
-                 stick to being most compatible.
+      Runtime-async requires the FSharp.Core built from dotnet/fsharp PR #20235
+      (provides __runtimeAsyncReturn and friends). The compiler itself is selected
+      through DotnetFscCompilerPath in Directory.Build.props.
     -->
-    <PackageReference Update="FSharp.Core" Version="6.0.1">
-      <!-- if using "remove unused references", this prevents FSharp.Core from being shown in that list -->
-      <TreatAsUsed>true</TreatAsUsed>
-    </PackageReference>
-    <!-- Provides System.Threading.Channels for netstandard2.1 consumers; built into net5.0+ -->
-    <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
+    <Reference Include="FSharp.Core">
+      <HintPath>D:\runtime-async-bits\FSharp.Core\Release\net10.0\FSharp.Core.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 </Project>

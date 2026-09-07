@@ -1,3 +1,6 @@
 <Project>
   <Import Project="Version.props" />
+  <PropertyGroup>
+    <DotnetFscCompilerPath>D:\runtime-async-bits\fsc\Release\net11.0\fsc.dll</DotnetFscCompilerPath>
+  </PropertyGroup>
 </Project>
