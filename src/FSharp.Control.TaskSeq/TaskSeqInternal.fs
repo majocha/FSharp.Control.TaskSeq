@@ -867,21 +867,27 @@ module internal TaskSeqInternal =
             | false -> return None
         }
 
+    // Continues a primed enumerator as a taskSeq, taking over its disposal.
+    // (Separate function because a taskSeq CE nested in a task CE body is not statically
+    // compilable in Debug builds, FS3511.)
+    let private enumeratorRest (e: IAsyncEnumerator<_>) = taskSeq {
+        use _disposedWithRest = e
+
+        while! e.MoveNextAsync() do
+            yield e.Current
+    }
+
     let tryTail (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
         task {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+            // note: not 'use e' — the returned sequence continues with this enumerator,
+            // and takes over disposal of it.
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
             match! e.MoveNextAsync() with
             | false -> return None
-            | true ->
-                return
-                    taskSeq {
-                        while! e.MoveNextAsync() do
-                            yield e.Current
-                    }
-                    |> Some
+            | true -> return Some(enumeratorRest e)
         }
 
     let firstOrDefault defaultValue source =
@@ -899,7 +905,9 @@ module internal TaskSeqInternal =
             invalidArg (nameof count) $"The value must be non-negative, but was {count}."
 
         task {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+            // note: not 'use e' — the returned 'rest' sequence continues with this
+            // enumerator, and takes over disposal of it.
+            let e = source.GetAsyncEnumerator CancellationToken.None
             let first = ResizeArray<'T>(count)
             let mutable i = 0
             let mutable go = true
@@ -914,12 +922,8 @@ module internal TaskSeqInternal =
                     go <- false
 
             // 'rest' captures 'e' from the outer task block; if the source was not exhausted,
-            // advance once past the last element added to 'first', then yield the remainder.
-            let rest = taskSeq {
-                if go then
-                    while! e.MoveNextAsync() do
-                        yield e.Current
-            }
+            // yield the remainder.
+            let rest = if go then enumeratorRest e else empty
 
             return first.ToArray(), rest
         }
@@ -1331,39 +1335,47 @@ module internal TaskSeqInternal =
 
                 }
 
+    // Note: the match is outside the taskSeq CEs (per-branch CE, like 'map'), because the
+    // runtime-async analysis rejects the async arm's `let!` under the match in Debug builds.
     let takeWhile isInclusive predicate (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        taskSeq {
+        match predicate with
+        | Predicate synchronousPredicate -> taskSeq {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let! notEmpty = e.MoveNextAsync()
             let mutable hasMore = notEmpty
 
-            match predicate with
-            | Predicate synchronousPredicate ->
-                while hasMore && synchronousPredicate e.Current do
-                    yield e.Current
-                    let! cont = e.MoveNextAsync()
-                    hasMore <- cont
-
-            | PredicateAsync asyncPredicate ->
-                let mutable predicateHolds = true
-
-                while hasMore && predicateHolds do // TODO: check perf if `while!` is going to be better or equal
-                    let! predicateIsTrue = asyncPredicate e.Current
-
-                    if predicateIsTrue then
-                        yield e.Current
-                        let! cont = e.MoveNextAsync()
-                        hasMore <- cont
-
-                    predicateHolds <- predicateIsTrue
+            while hasMore && synchronousPredicate e.Current do
+                yield e.Current
+                let! cont = e.MoveNextAsync()
+                hasMore <- cont
 
             // "inclusive" means: always return the item that we pulled, regardless of the result of applying the predicate
             // and only stop thereafter. The non-inclusive versions, in contrast, do not return the item under which the predicate is false.
             if hasMore && isInclusive then
                 yield e.Current
-        }
+          }
+
+        | PredicateAsync asyncPredicate -> taskSeq {
+            use e = source.GetAsyncEnumerator CancellationToken.None
+            let! notEmpty = e.MoveNextAsync()
+            let mutable hasMore = notEmpty
+            let mutable predicateHolds = true
+
+            while hasMore && predicateHolds do // TODO: check perf if `while!` is going to be better or equal
+                let! predicateIsTrue = asyncPredicate e.Current
+
+                if predicateIsTrue then
+                    yield e.Current
+                    let! cont = e.MoveNextAsync()
+                    hasMore <- cont
+
+                predicateHolds <- predicateIsTrue
+
+            if hasMore && isInclusive then
+                yield e.Current
+          }
 
     let skipWhile isInclusive predicate (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
@@ -1494,28 +1506,27 @@ module internal TaskSeqInternal =
 
     // Core of 'except', split out because the runtime-async compiler analysis currently
     // rejects a 'use' combined with a 'while!' loop under an 'if' inside a taskSeq CE.
-    let private exceptCore (itemsToExclude: TaskSeq<'T>) (e: IAsyncEnumerator<'T>) : TaskSeq<'T> =
-        taskSeq {
-            // only create hashset by the time we actually start iterating;
-            // taskSeq enumerates sequentially, so a plain HashSet suffices — no locking needed.
-            let hashSet = HashSet<_>(HashIdentity.Structural)
+    let private exceptCore (itemsToExclude: TaskSeq<'T>) (e: IAsyncEnumerator<'T>) : TaskSeq<'T> = taskSeq {
+        // only create hashset by the time we actually start iterating;
+        // taskSeq enumerates sequentially, so a plain HashSet suffices — no locking needed.
+        let hashSet = HashSet<_>(HashIdentity.Structural)
 
-            use excl = itemsToExclude.GetAsyncEnumerator CancellationToken.None
+        use excl = itemsToExclude.GetAsyncEnumerator CancellationToken.None
 
-            while! excl.MoveNextAsync() do
-                hashSet.Add excl.Current |> ignore
+        while! excl.MoveNextAsync() do
+            hashSet.Add excl.Current |> ignore
 
-            // if true, it was added, and therefore unique, so we return it
-            // if false, it existed, and therefore a duplicate, and we skip
-            if hashSet.Add e.Current then
-                yield e.Current
+        // if true, it was added, and therefore unique, so we return it
+        // if false, it existed, and therefore a duplicate, and we skip
+        if hashSet.Add e.Current then
+            yield e.Current
 
-            while! e.MoveNextAsync() do
-                let current = e.Current
+        while! e.MoveNextAsync() do
+            let current = e.Current
 
-                if hashSet.Add current then
-                    yield current
-        }
+            if hashSet.Add current then
+                yield current
+    }
 
     let except (itemsToExclude: TaskSeq<_>) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source

@@ -42,14 +42,6 @@ type taskSeq<'T> = IAsyncEnumerable<'T>
 type TaskSeq<'T> = IAsyncEnumerable<'T>
 
 
-/// The result of a single step of the producer side of a task sequence,
-/// communicated to the consumer through a rendezvous handshake.
-[<NoComparison; NoEquality>]
-type TaskSeqEvent<'T> =
-    | Item of 'T
-    | Completed
-    | Faulted of exn
-
 /// Marker exception used to unwind the producer when the enumerator is disposed
 /// before the sequence completed. It is caught by the producer wrapper and never
 /// escapes the library. For use by this library only, should not be used directly in user code.
@@ -57,27 +49,43 @@ type TaskSeqEvent<'T> =
 type TaskSeqDisposal() =
     inherit Exception()
 
+/// A one-shot awaitable signal used for the producer/consumer handshake,
+/// based on ManualResetValueTaskSourceCore. GetResult rethrows the original
+/// exception (unwrapped) via ExceptionDispatchInfo, matching resumable-code behavior.
+/// For use by this library only, should not be used directly in user code.
 [<NoComparison; NoEquality>]
 type TaskSeqSignal<'T>() =
+    // NOTE: RunContinuationsAsynchronously = false (the default) is deliberate and matches the
+    // resumable-code implementation: the producer is driven inline by the consumer's MoveNextAsync
+    // (and vice versa), so a synchronous producer runs to its next publish point synchronously.
     let mutable source = ManualResetValueTaskSourceCore<'T>()
-    do source.RunContinuationsAsynchronously <- true
 
     member this.WaitAsync() = ValueTask<'T>(this, source.Version)
     member _.SetResult value = source.SetResult value
+    member _.SetException(error: exn) = source.SetException error
     member _.Reset() = source.Reset()
+    member _.Version = source.Version
 
     interface IValueTaskSource<'T> with
         member _.GetResult(token) = source.GetResult(token)
         member _.GetStatus(token) = source.GetStatus(token)
 
-        member _.OnCompleted(continuation, state, token, flags) =
-            source.OnCompleted(continuation, state, token, flags)
+        member _.OnCompleted(continuation, continuationState, token, flags) =
+            source.OnCompleted(continuation, continuationState, token, flags)
 
+/// State shared between the producer (the taskSeq computation) and the consumer
+/// (the IAsyncEnumerator) of a task sequence. For use by this library only.
 [<NoComparison; NoEquality>]
 type TaskSeqState<'T> = {
+    /// Consumer -> Producer: set by MoveNextAsync to request the next item.
     MoveNextRequest: TaskSeqSignal<unit>
-    ItemResponse: TaskSeqSignal<TaskSeqEvent<'T>>
+    /// Producer -> Consumer: completed with true (item available in Current), false (end of
+    /// sequence), or an exception. This is the 'promiseOfValueOrEnd' of the resumable design.
+    ItemResponse: TaskSeqSignal<bool>
     CancellationToken: CancellationToken
+    /// Used by the IAsyncEnumerator interface to return the Current value.
+    mutable Current: ValueOption<'T>
+    /// Set by DisposeAsync to unwind the producer, running pending compensations.
     mutable DisposalRequested: bool
 }
 
@@ -87,15 +95,19 @@ type TaskSeqState<'T> = {
 module TaskSeqState =
     let create cancellationToken = {
         MoveNextRequest = TaskSeqSignal<unit>()
-        ItemResponse = TaskSeqSignal<TaskSeqEvent<'T>>()
+        ItemResponse = TaskSeqSignal<bool>()
         CancellationToken = cancellationToken
+        Current = ValueNone
         DisposalRequested = false
     }
 
-    let publishItem state item = state.ItemResponse.SetResult(Item item)
-    let publishCompleted state = state.ItemResponse.SetResult(Completed)
-    let publishFaulted state (error: exn) = state.ItemResponse.SetResult(Faulted error)
-    let raiseDisposalRequested () = raise (TaskSeqDisposal ())
+    let publishItem state item =
+        state.Current <- ValueSome item
+        state.ItemResponse.SetResult true
+
+    let publishCompleted state = state.ItemResponse.SetResult false
+    let publishFaulted state (error: exn) = state.ItemResponse.SetException error
+    let raiseDisposalRequested () = raise (TaskSeqDisposal())
 
     /// Reset the request signal after the consumer asked for the next item,
     /// and raise the disposal sentinel if the enumerator was disposed in the meantime.
@@ -105,51 +117,66 @@ module TaskSeqState =
         if state.DisposalRequested then
             raiseDisposalRequested ()
 
+/// The body of a taskSeq computation: a function that runs the computation
+/// against the shared producer/consumer state. Values of this type only occur
+/// inline, inside a runtime-async producer method. For use by this library only.
 type TaskSeqCode<'T> = TaskSeqState<'T> -> unit
 
 [<NoComparison; NoEquality>]
 type internal TaskSeqEnumerator<'T>(state: TaskSeqState<'T>, producerTask: Task<unit>) =
-    let mutable current = ValueNone
     let mutable moveNextInProgress = 0
     let mutable completed = false
     let mutable disposed = false
     let mutable disposalSignaled = false
 
+    interface IValueTaskSource<bool> with
+        member _.GetResult(token) =
+            Interlocked.Exchange(&moveNextInProgress, 0) |> ignore
+
+            try
+                match (state.ItemResponse :> IValueTaskSource<bool>).GetResult(token) with
+                | true -> true
+                | false ->
+                    // Signal we reached the end (also for empty sequences).
+                    completed <- true
+                    state.Current <- ValueNone
+                    false
+            with _ ->
+                // the producer faulted: rethrow the original exception, unwrapped
+                completed <- true
+                state.Current <- ValueNone
+                reraise ()
+
+        member _.GetStatus(token) = (state.ItemResponse :> IValueTaskSource<bool>).GetStatus(token)
+
+        member _.OnCompleted(continuation, continuationState, token, flags) =
+            (state.ItemResponse :> IValueTaskSource<bool>).OnCompleted(continuation, continuationState, token, flags)
+
     interface IAsyncEnumerator<'T> with
         member _.Current =
-            match current with
+            match state.Current with
             | ValueSome x -> x
-            | ValueNone -> Unchecked.defaultof<'T>
+            | ValueNone ->
+                // Returning a default value is similar to how F#'s seq<'T> behaves.
+                // According to the docs, behavior of Current is Unspecified in this case.
+                Unchecked.defaultof<'T>
 
-        member _.MoveNextAsync() =
+        member this.MoveNextAsync() =
             if completed || disposed then
                 // return False when beyond the last item, or after disposal
                 ValueTask.False
             elif Interlocked.Exchange(&moveNextInProgress, 1) = 1 then
                 invalidOp "MoveNextAsync cannot be called concurrently."
             else
+                // Honor the cancellation token passed to GetAsyncEnumerator (fixes #179).
+                // ThrowIfCancellationRequested() is a no-op for CancellationToken.None.
                 state.CancellationToken.ThrowIfCancellationRequested()
 
-                __runtimeAsyncReturnValueTask<bool> (
-                    try
-                        state.MoveNextRequest.SetResult()
-
-                        match AsyncHelpers.Await(state.ItemResponse.WaitAsync()) with
-                        | Item value ->
-                            current <- ValueSome value
-                            true
-                        | Completed ->
-                            current <- ValueNone
-                            completed <- true
-                            false
-                        | Faulted error ->
-                            current <- ValueNone
-                            completed <- true
-                            raise error
-                    finally
-                        state.ItemResponse.Reset()
-                        Interlocked.Exchange(&moveNextInProgress, 0) |> ignore
-                )
+                state.ItemResponse.Reset()
+                // Request the next item from the producer, then hand out a ValueTask
+                // that completes when the producer publishes it.
+                state.MoveNextRequest.SetResult()
+                ValueTask<bool>(this, state.ItemResponse.Version)
 
         /// Disposes of the IAsyncEnumerator (*not* the IAsyncEnumerable!). Resumes the producer
         /// with a disposal request, so that pending `use` and `try/finally` compensations run,
@@ -183,8 +210,7 @@ type TaskSeqEnumerable<'T>(runProducer: TaskSeqState<'T> -> Task<unit>) =
 
 type TaskSeqBuilder() =
 
-    member inline _.Delay([<InlineIfLambda>] generator: unit -> TaskSeqCode<'T>) : TaskSeqCode<'T> =
-        fun state -> generator () state
+    member inline _.Delay([<InlineIfLambda>] generator: unit -> TaskSeqCode<'T>) : TaskSeqCode<'T> = fun state -> generator () state
 
     member inline _.Run([<InlineIfLambda>] code: TaskSeqCode<'T>) : IAsyncEnumerable<'T> =
         let runProducer (state: TaskSeqState<'T>) =
@@ -201,28 +227,25 @@ type TaskSeqBuilder() =
                     TaskSeqState.publishCompleted state
                 with
                 | :? TaskSeqDisposal -> ()
-                | error ->
-                    TaskSeqState.publishFaulted state error
+                | error -> TaskSeqState.publishFaulted state error
             )
 
         TaskSeqEnumerable(runProducer) :> IAsyncEnumerable<'T>
 
     member inline _.Zero() : TaskSeqCode<'T> = fun _ -> ()
 
-    member inline _.ReturnFrom(task: Task) : TaskSeqCode<'T> =
-        fun _ -> AsyncHelpers.Await task
+    member inline _.ReturnFrom(task: Task) : TaskSeqCode<'T> = fun _ -> AsyncHelpers.Await task
 
-    member inline _.ReturnFrom(task: Task<'U>) : TaskSeqCode<'T> =
-        fun _ -> AsyncHelpers.Await task |> ignore
+    member inline _.ReturnFrom(task: Task<'U>) : TaskSeqCode<'T> = fun _ -> AsyncHelpers.Await task |> ignore
 
-    member inline _.ReturnFrom(task: ValueTask) : TaskSeqCode<'T> =
-        fun _ -> AsyncHelpers.Await task
+    member inline _.ReturnFrom(task: ValueTask) : TaskSeqCode<'T> = fun _ -> AsyncHelpers.Await task
 
-    member inline _.ReturnFrom(task: ValueTask<'U>) : TaskSeqCode<'T> =
-        fun _ -> AsyncHelpers.Await task |> ignore
+    member inline _.ReturnFrom(task: ValueTask<'U>) : TaskSeqCode<'T> = fun _ -> AsyncHelpers.Await task |> ignore
 
     member inline _.ReturnFrom(computation: Async<'U>) : TaskSeqCode<'T> =
-        fun _ -> AsyncHelpers.Await(Async.StartImmediateAsTask computation) |> ignore
+        fun _ ->
+            AsyncHelpers.Await(Async.StartImmediateAsTask computation)
+            |> ignore
 
     // NOTE: no concrete Bind for non-generic Task/ValueTask: having them alongside the
     // generic ones broke type inference for `use!` (and other unit-continuations).
@@ -236,11 +259,7 @@ type TaskSeqBuilder() =
 
     member inline _.Bind(computation: Async<'U>, [<InlineIfLambda>] continuation: 'U -> TaskSeqCode<'T>) : TaskSeqCode<'T> =
         fun state ->
-            continuation
-                (AsyncHelpers.Await(
-                    Async.StartImmediateAsTask(computation, cancellationToken = state.CancellationToken)
-                ))
-                state
+            continuation (AsyncHelpers.Await(Async.StartImmediateAsTask(computation, cancellationToken = state.CancellationToken))) state
 
     member inline _.Combine(task1: TaskSeqCode<'T>, [<InlineIfLambda>] task2: TaskSeqCode<'T>) : TaskSeqCode<'T> =
         fun state ->
@@ -254,14 +273,18 @@ type TaskSeqBuilder() =
             with error ->
                 catch error state
 
-    member inline _.TryFinally([<InlineIfLambda>] body: TaskSeqCode<'T>, [<InlineIfLambda>] compensationAction: unit -> unit) : TaskSeqCode<'T> =
+    member inline _.TryFinally
+        ([<InlineIfLambda>] body: TaskSeqCode<'T>, [<InlineIfLambda>] compensationAction: unit -> unit)
+        : TaskSeqCode<'T> =
         fun state ->
             try
                 body state
             finally
                 compensationAction ()
 
-    member inline _.TryFinallyAsync([<InlineIfLambda>] body: TaskSeqCode<'T>, [<InlineIfLambda>] compensationAction: unit -> Task) : TaskSeqCode<'T> =
+    member inline _.TryFinallyAsync
+        ([<InlineIfLambda>] body: TaskSeqCode<'T>, [<InlineIfLambda>] compensationAction: unit -> Task)
+        : TaskSeqCode<'T> =
         fun state ->
             try
                 body state
@@ -284,7 +307,9 @@ type TaskSeqBuilder() =
                 body state
 
     /// Used by `For`. Unclear if `while!` (from F# 8.0) hits this.
-    member inline _.WhileAsync([<InlineIfLambda>] condition: unit -> ValueTask<bool>, [<InlineIfLambda>] body: TaskSeqCode<'T>) : TaskSeqCode<'T> =
+    member inline _.WhileAsync
+        ([<InlineIfLambda>] condition: unit -> ValueTask<bool>, [<InlineIfLambda>] body: TaskSeqCode<'T>)
+        : TaskSeqCode<'T> =
         fun state ->
             let mutable conditionRes = true
 
@@ -365,5 +390,3 @@ type TaskSeqDynamicBuilder() =
 [<AutoOpen>]
 module TaskSeqDynamicBuilder =
     let taskSeqDynamic = TaskSeqDynamicBuilder()
-
-

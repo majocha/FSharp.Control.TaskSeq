@@ -35,17 +35,6 @@ type taskSeq<'T> = IAsyncEnumerable<'T>
 type TaskSeq<'T> = IAsyncEnumerable<'T>
 
 /// <summary>
-/// The result of a single step of the producer side of a task sequence,
-/// communicated to the consumer through a rendezvous handshake.
-/// For use by this library only, should not be used directly in user code.
-/// </summary>
-[<NoComparison; NoEquality>]
-type TaskSeqEvent<'T> =
-    | Item of 'T
-    | Completed
-    | Faulted of exn
-
-/// <summary>
 /// Marker exception used to unwind the producer when the enumerator is disposed
 /// before the sequence completed. It is caught by the producer wrapper and never
 /// escapes the library. For use by this library only, should not be used directly in user code.
@@ -68,7 +57,9 @@ type TaskSeqSignal<'T> =
 
     member WaitAsync: unit -> ValueTask<'T>
     member SetResult: value: 'T -> unit
+    member SetException: error: exn -> unit
     member Reset: unit -> unit
+    member Version: int16
 
 /// <summary>
 /// State shared between the producer (the <c>taskSeq</c> computation) and the consumer
@@ -81,9 +72,12 @@ type TaskSeqState<'T> =
     {
         /// Consumer -> Producer: set by MoveNextAsync to request the next item.
         MoveNextRequest: TaskSeqSignal<unit>
-        /// Producer -> Consumer: set by the producer to publish the next item, completion or failure.
-        ItemResponse: TaskSeqSignal<TaskSeqEvent<'T>>
+        /// Producer -> Consumer: completed with true (item available in Current), false (end of
+        /// sequence), or an exception.
+        ItemResponse: TaskSeqSignal<bool>
         CancellationToken: CancellationToken
+        /// Used by the IAsyncEnumerator interface to return the Current value.
+        mutable Current: ValueOption<'T>
         /// Set by DisposeAsync to unwind the producer, running pending compensations.
         mutable DisposalRequested: bool
     }
@@ -98,8 +92,11 @@ type TaskSeqState<'T> =
 module TaskSeqState =
 
     val create: cancellationToken: CancellationToken -> TaskSeqState<'T>
+    /// Publish an item to the consumer: sets Current and completes the response signal.
     val publishItem: state: TaskSeqState<'T> -> item: 'T -> unit
+    /// Signal the end of the sequence.
     val publishCompleted: state: TaskSeqState<'T> -> unit
+    /// Signal a producer failure; the consumer rethrows the original exception, unwrapped.
     val publishFaulted: state: TaskSeqState<'T> -> error: exn -> unit
 
     /// Raise the disposal sentinel exception.
@@ -154,8 +151,7 @@ type TaskSeqBuilder =
     member inline TryFinallyAsync: body: TaskSeqCode<'T> * compensationAction: (unit -> Task) -> TaskSeqCode<'T>
     member inline TryWith: body: TaskSeqCode<'T> * catch: (exn -> TaskSeqCode<'T>) -> TaskSeqCode<'T>
 
-    member inline Using:
-        resource: 'Resource * body: ('Resource -> TaskSeqCode<'T>) -> TaskSeqCode<'T>
+    member inline Using: resource: 'Resource * body: ('Resource -> TaskSeqCode<'T>) -> TaskSeqCode<'T>
 
     member inline While: condition: (unit -> bool) * body: TaskSeqCode<'T> -> TaskSeqCode<'T>
     /// Used by `For`. Unclear if `while!` (from F# 8.0) hits this
