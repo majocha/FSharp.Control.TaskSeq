@@ -73,7 +73,7 @@ Generates optimized IL code through resumable state machines, and comes with a c
       through DotnetFscCompilerPath in Directory.Build.props.
     -->
     <Reference Include="FSharp.Core">
-      <HintPath>D:\runtime-async-bits\FSharp.Core\Release\net10.0\FSharp.Core.dll</HintPath>
+      <HintPath>$(RuntimeAsyncBitsPath)\FSharp.Core\Release\net10.0\FSharp.Core.dll</HintPath>
       <Private>true</Private>
     </Reference>
   </ItemGroup>
