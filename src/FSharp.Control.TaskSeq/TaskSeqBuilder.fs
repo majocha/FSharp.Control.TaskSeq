@@ -19,13 +19,6 @@ open System.Runtime.ExceptionServices
 // the proper type from 0.4.0 onwards, see FSI file
 type TaskSeq<'T> = IAsyncEnumerable<'T>
 
-type EnumeratorState<'T> =
-    | Completed
-    | Canceled of OperationCanceledException
-    | Disposed
-    | Item of 'T
-    | Faulted of ExceptionDispatchInfo
-
 /// A one-shot awaitable signal used for the producer/consumer handshake,
 /// based on ManualResetValueTaskSourceCore. GetResult rethrows the original
 /// exception (unwrapped) via ExceptionDispatchInfo, matching resumable-code behavior.
@@ -49,17 +42,23 @@ type TaskSeqSignal<'T>() =
         member _.OnCompleted(continuation, continuationState, token, flags) =
             source.OnCompleted(continuation, continuationState, token, flags)
 
+type ProducerResponse<'T> =
+    | Completed
+    | Canceled of OperationCanceledException
+    | Disposed
+    | Item of 'T
+    | Faulted of ExceptionDispatchInfo
+    | TailCall of (ProducerState<'T> -> Task<unit>)
+
 /// State shared between the producer (the taskSeq computation) and the consumer
 /// (the IAsyncEnumerator) of a task sequence. For use by this library only.
-[<NoComparison; NoEquality>]
-type TaskSeqState<'T> = {
+and [<NoComparison; NoEquality>] ProducerState<'T> = {
     /// Consumer -> Producer: set by MoveNextAsync to request the next item.
     MoveNextRequest: TaskSeqSignal<unit>
     /// Producer -> Consumer: completed with true (item available in Current), false (end of
     /// sequence), or an exception. This is the 'promiseOfValueOrEnd' of the resumable design.
-    ItemResponse: TaskSeqSignal<EnumeratorState<'T>>
+    ItemResponse: TaskSeqSignal<ProducerResponse<'T>>
     CancellationToken: CancellationToken
-    KickOff: bool
 }
 
 // NOTE: these helpers are deliberately NOT inline and are used from inline builder
@@ -78,21 +77,38 @@ module TaskSeqState =
 /// The body of a taskSeq computation: a function that runs the computation
 /// against the shared producer/consumer state. Values of this type only occur
 /// inline, inside a runtime-async producer method. For use by this library only.
-type TaskSeqCode<'T> = TaskSeqState<'T> -> unit
+type TaskSeqCode<'T> = ProducerState<'T> -> unit
 
 [<NoComparison; NoEquality>]
-type internal TaskSeqEnumerator<'T>(startPRoducer, cancellationToken: CancellationToken) =
+type internal TaskSeqEnumerator<'T>(startProducer: ProducerState<'T> -> Task<unit>, cancellationToken: CancellationToken) =
     let linkedCancellationSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+    let moveNextRequest = TaskSeqSignal<unit>()
+    let itemResponse = TaskSeqSignal<_>()
+    let cancellationToken = linkedCancellationSource.Token
+
     let mutable current = Item Unchecked.defaultof<'T>
+    let mutable currentProducerTask = Some startProducer
 
-    let state = {
-           MoveNextRequest = TaskSeqSignal<unit>()
-           ItemResponse = TaskSeqSignal<_>()
-           CancellationToken = linkedCancellationSource.Token
-           KickOff = true
-       }
+    let producerTask =
+        __runtimeAsyncReturn (
+            let state = { MoveNextRequest = moveNextRequest; ItemResponse = itemResponse; CancellationToken = cancellationToken }
 
-    let producerTask = startPRoducer state
+            try
+                TaskSeqState.awaitNextMove state
+                let mutable go = true
+                while go do                    
+                    let next = currentProducerTask
+                    match next with
+                    | Some start ->
+                        currentProducerTask <- None
+                        AsyncHelpers.Await (start state)
+                        go <- true
+                    | None -> go <- false
+                TaskSeqState.publishResponse state (Completed)
+            with
+            | :? OperationCanceledException as oce -> TaskSeqState.publishResponse state (Canceled oce)
+            | error -> TaskSeqState.publishResponse state (Faulted (ExceptionDispatchInfo.Capture error))
+        )
 
     interface IAsyncEnumerator<'T> with
         member _.Current =
@@ -109,16 +125,19 @@ type internal TaskSeqEnumerator<'T>(startPRoducer, cancellationToken: Cancellati
                 | Completed | Canceled _ | Disposed -> false
                 | Faulted edi -> edi.Throw(); false
                 | _ ->
-                state.ItemResponse.Reset()
+                itemResponse.Reset()
 
-                state.MoveNextRequest.SetResult()
-                let next = state.ItemResponse.WaitAsync() |> AsyncHelpers.Await
+                moveNextRequest.SetResult()
+                let next = itemResponse.WaitAsync() |> AsyncHelpers.Await
                 current <- next
                 match next with
                 | Faulted edi -> edi.Throw(); false
                 | Canceled oce -> raise oce
                 | Item item -> true
                 | Disposed | Completed -> false
+                | TailCall startProducerTask ->
+                    currentProducerTask <- Some startProducerTask
+                    (this :> IAsyncEnumerator<'T>).MoveNextAsync() |> AsyncHelpers.Await
             )
 
         /// Disposes of the IAsyncEnumerator (*not* the IAsyncEnumerable!). Resumes the producer
@@ -132,8 +151,8 @@ type internal TaskSeqEnumerator<'T>(startPRoducer, cancellationToken: Cancellati
                 | Item _ ->
                     cts.Cancel false
                     // wake up the producer in case it is waiting for the next MoveNextAsync
-                    state.MoveNextRequest.SetResult()
-                    let response = state.ItemResponse.WaitAsync() |> AsyncHelpers.Await
+                    moveNextRequest.SetResult()
+                    let response = itemResponse.WaitAsync() |> AsyncHelpers.Await
                     current <- response
                     match response with
                     | Faulted edi -> edi.Throw()
@@ -142,31 +161,19 @@ type internal TaskSeqEnumerator<'T>(startPRoducer, cancellationToken: Cancellati
             )
 
 [<Struct; NoComparison; NoEquality>]
-type TaskSeqEnumerable<'T>(runProducer: TaskSeqState<'T> -> Task<unit>) =
-    member _.RunProducer(state: TaskSeqState<'T>) = runProducer state
+type TaskSeqEnumerable<'T>(startProducer: ProducerState<'T> -> Task<unit>) =
+    member _.StartProducerTask = startProducer
 
     interface IAsyncEnumerable<'T> with
         member this.GetAsyncEnumerator(cancellationToken) =
-            TaskSeqEnumerator<'T>(runProducer, cancellationToken)
+            TaskSeqEnumerator<'T>(startProducer, cancellationToken)
 
 type TaskSeqBuilder() =
 
     member inline _.Delay([<InlineIfLambda>] generator: unit -> TaskSeqCode<'T>) : TaskSeqCode<'T> = fun state -> generator () state
 
     member inline _.Run([<InlineIfLambda>] code: TaskSeqCode<'T>) : IAsyncEnumerable<'T> =
-        let runProducer (state: TaskSeqState<'T>) =
-            __runtimeAsyncReturn (
-                try 
-                    // Wait for the consumer to kick off the enumeration.
-                    if state.KickOff then
-                        TaskSeqState.awaitNextMove state
-
-                    code state
-                    TaskSeqState.publishResponse state (Completed)
-                with
-                | :? OperationCanceledException as oce -> TaskSeqState.publishResponse state (Canceled oce)
-                | error -> TaskSeqState.publishResponse state (Faulted (ExceptionDispatchInfo.Capture error))
-            )
+        let runProducer state = __runtimeAsyncReturn (code state)
 
         TaskSeqEnumerable(runProducer) :> IAsyncEnumerable<'T>
 
@@ -301,7 +308,7 @@ type TaskSeqBuilder() =
     //    match source with
     //    | :? TaskSeqEnumerable<'T> as ts ->
     //        fun state ->
-    //            AsyncHelpers.Await (ts.RunProducer { state with KickOff = false })
+    //            TaskSeqState.publishResponse state (TailCall ts.StartProducerTask)
     //    | _ ->
     //        this.YieldFrom source
 
