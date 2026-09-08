@@ -871,13 +871,14 @@ module internal TaskSeqInternal =
         checkNonNull (nameof source) source
 
         runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
             match! e.MoveNextAsync() with
             | false -> return None
             | true ->
                 return
                     taskSeq {
+                        use e = e
                         while! e.MoveNextAsync() do
                             yield e.Current
                     }
@@ -899,7 +900,7 @@ module internal TaskSeqInternal =
             invalidArg (nameof count) $"The value must be non-negative, but was {count}."
 
         runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+            let e = source.GetAsyncEnumerator CancellationToken.None
             let first = ResizeArray<'T>(count)
             let mutable i = 0
             let mutable go = true
@@ -913,9 +914,8 @@ module internal TaskSeqInternal =
                 else
                     go <- false
 
-            // 'rest' captures 'e' from the outer task block; if the source was not exhausted,
-            // advance once past the last element added to 'first', then yield the remainder.
             let rest = taskSeq {
+                use e = e
                 if go then
                     while! e.MoveNextAsync() do
                         yield e.Current
