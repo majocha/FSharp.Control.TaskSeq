@@ -113,7 +113,7 @@ type RuntimeTaskBuilder() =
         struct (left, AsyncHelpers.Await(Async.StartImmediateAsTask right))
 
 [<AutoOpen>]
-module LowPriority =
+module RuntimeTaskBuilderLowPriority =
     type RuntimeTaskBuilder with
         // SRTP fallbacks mirroring the task builder's task-like Bind/ReturnFrom/MergeSources,
         // so custom awaitables compose without dedicated overloads.
@@ -171,7 +171,7 @@ module LowPriority =
                 continuation
 
 [<AutoOpen>]
-module MediumPriority =
+module RuntimeTaskBuilderMediumPriority =
     type RuntimeTaskBuilder with  
         member inline _.Bind(code: struct ('T1 * 'T2), [<InlineIfLambda>] continuation: struct ('T1 * 'T2) -> 'U) =
             continuation code
@@ -183,7 +183,7 @@ module MediumPriority =
             continuation (AsyncHelpers.Await(Async.StartImmediateAsTask computation))
 
 [<AutoOpen>]
-module HighPriority =
+module RuntimeTaskBuilderHighPriority =
     type RuntimeTaskBuilder with       
         member inline _.Bind(task: Task<'T>, [<InlineIfLambda>] continuation: 'T -> 'U) =
             continuation (AsyncHelpers.Await task)
