@@ -9,25 +9,6 @@ open System.Collections.Generic
 
 open FSharp.Core.CompilerServices
 
-[<AutoOpen>]
-module Internal =
-
-    /// <summary>
-    /// Setting from environment variable <see cref="TASKSEQ_LOG_VERBOSE" />, which,
-    /// when set, enables (very) verbose printing of flow and state
-    /// </summary>
-    val initVerbose: unit -> bool
-
-/// <summary>
-/// Represents a task sequence and is the output of using the <paramref name="taskSeq{...}" />
-/// computation expression from this library. It is an alias for <see cref="T:System.IAsyncEnumerable&lt;_>" />.
-///
-/// The type <paramref name="taskSeq&lt;_>" /> is deprecated since version 0.4.0,
-/// please use <paramref name="TaskSeq&lt;_>" /> in its stead. See <see cref="T:FSharp.Control.TaskSeq&lt;_>" />.
-/// </summary>
-[<Obsolete "From version 0.4.0 onward, 'TaskSeq<_>' is deprecated in favor of 'TaskSeq<_>'. It will be removed in an upcoming release.">]
-type taskSeq<'T> = IAsyncEnumerable<'T>
-
 /// <summary>
 /// Represents a task sequence and is the output of using the <paramref name="taskSeq{...}" />
 /// computation expression from this library. It is an alias for <see cref="T:System.IAsyncEnumerable&lt;_>" />.
@@ -53,7 +34,7 @@ type TaskSeqDisposal =
 type TaskSeqSignal<'T> =
     interface IValueTaskSource<'T>
 
-    new: unit -> TaskSeqSignal<'T>
+    new: ('T -> 'T) -> TaskSeqSignal<'T>
 
     member WaitAsync: unit -> ValueTask<'T>
     member SetResult: value: 'T -> unit
@@ -80,6 +61,7 @@ type TaskSeqState<'T> =
         mutable Current: ValueOption<'T>
         /// Set by DisposeAsync to unwind the producer, running pending compensations.
         mutable DisposalRequested: bool
+        KickOff: bool
     }
 
 /// <summary>
@@ -91,7 +73,6 @@ type TaskSeqState<'T> =
 /// </summary>
 module TaskSeqState =
 
-    val create: cancellationToken: CancellationToken -> TaskSeqState<'T>
     /// Publish an item to the consumer: sets Current and completes the response signal.
     val publishItem: state: TaskSeqState<'T> -> item: 'T -> unit
     /// Signal the end of the sequence.
