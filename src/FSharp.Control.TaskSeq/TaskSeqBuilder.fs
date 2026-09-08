@@ -261,7 +261,7 @@ type TaskSeqBuilder() =
         fun state ->
             continuation (AsyncHelpers.Await(Async.StartImmediateAsTask(computation, cancellationToken = state.CancellationToken))) state
 
-    member inline _.Combine(task1: TaskSeqCode<'T>, [<InlineIfLambda>] task2: TaskSeqCode<'T>) : TaskSeqCode<'T> =
+    member inline _.Combine([<InlineIfLambda>] task1: TaskSeqCode<'T>, [<InlineIfLambda>] task2: TaskSeqCode<'T>) : TaskSeqCode<'T> =
         fun state ->
             task1 state
             task2 state
