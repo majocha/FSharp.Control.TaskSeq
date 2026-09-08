@@ -42,13 +42,12 @@ type TaskSeqSignal<'T>() =
         member _.OnCompleted(continuation, continuationState, token, flags) =
             source.OnCompleted(continuation, continuationState, token, flags)
 
+[<Struct; NoComparison; NoEquality>]
 type ProducerResponse<'T> =
     | Completed
-    | Canceled of OperationCanceledException
-    | Disposed
-    | Item of 'T
-    | Faulted of ExceptionDispatchInfo
-    | TailCall of (ProducerState<'T> -> Task<unit>)
+    | Canceled of oce: OperationCanceledException
+    | Item of value: 'T
+    | Faulted of edi: ExceptionDispatchInfo
 
 /// State shared between the producer (the taskSeq computation) and the consumer
 /// (the IAsyncEnumerator) of a task sequence. For use by this library only.
@@ -87,28 +86,10 @@ type internal TaskSeqEnumerator<'T>(startProducer: ProducerState<'T> -> Task<uni
     let cancellationToken = linkedCancellationSource.Token
 
     let mutable current = Item Unchecked.defaultof<'T>
-    let mutable currentProducerTask = Some startProducer
 
-    let producerTask =
-        __runtimeAsyncReturn (
-            let state = { MoveNextRequest = moveNextRequest; ItemResponse = itemResponse; CancellationToken = cancellationToken }
+    let state = { MoveNextRequest = moveNextRequest; ItemResponse = itemResponse; CancellationToken = cancellationToken }
 
-            try
-                TaskSeqState.awaitNextMove state
-                let mutable go = true
-                while go do                    
-                    let next = currentProducerTask
-                    match next with
-                    | Some start ->
-                        currentProducerTask <- None
-                        AsyncHelpers.Await (start state)
-                        go <- true
-                    | None -> go <- false
-                TaskSeqState.publishResponse state (Completed)
-            with
-            | :? OperationCanceledException as oce -> TaskSeqState.publishResponse state (Canceled oce)
-            | error -> TaskSeqState.publishResponse state (Faulted (ExceptionDispatchInfo.Capture error))
-        )
+    let producerTask = startProducer state
 
     interface IAsyncEnumerator<'T> with
         member _.Current =
@@ -122,7 +103,7 @@ type internal TaskSeqEnumerator<'T>(startProducer: ProducerState<'T> -> Task<uni
         member this.MoveNextAsync() =
             __runtimeAsyncReturnValueTask (
                 match current with
-                | Completed | Canceled _ | Disposed -> false
+                | Completed | Canceled _ -> false
                 | Faulted edi -> edi.Throw(); false
                 | _ ->
                 itemResponse.Reset()
@@ -134,10 +115,7 @@ type internal TaskSeqEnumerator<'T>(startProducer: ProducerState<'T> -> Task<uni
                 | Faulted edi -> edi.Throw(); false
                 | Canceled oce -> raise oce
                 | Item item -> true
-                | Disposed | Completed -> false
-                | TailCall startProducerTask ->
-                    currentProducerTask <- Some startProducerTask
-                    (this :> IAsyncEnumerator<'T>).MoveNextAsync() |> AsyncHelpers.Await
+                | Completed -> false
             )
 
         /// Disposes of the IAsyncEnumerator (*not* the IAsyncEnumerable!). Resumes the producer
@@ -156,13 +134,13 @@ type internal TaskSeqEnumerator<'T>(startProducer: ProducerState<'T> -> Task<uni
                     current <- response
                     match response with
                     | Faulted edi -> edi.Throw()
-                    | _ -> current <- Disposed
-                | _ -> current <- Disposed
+                    | _ -> current <- Completed
+                | _ -> current <- Completed
             )
 
 [<Struct; NoComparison; NoEquality>]
-type TaskSeqEnumerable<'T>(startProducer: ProducerState<'T> -> Task<unit>) =
-    member _.StartProducerTask = startProducer
+type TaskSeqEnumerable<'T>(startProducer: ProducerState<'T> -> Task<unit>, tailContinuation: ProducerState<'T> -> Task<unit>) =
+    member _.TailContinuation(state) = tailContinuation state
 
     interface IAsyncEnumerable<'T> with
         member this.GetAsyncEnumerator(cancellationToken) =
@@ -173,9 +151,20 @@ type TaskSeqBuilder() =
     member inline _.Delay([<InlineIfLambda>] generator: unit -> TaskSeqCode<'T>) : TaskSeqCode<'T> = fun state -> generator () state
 
     member inline _.Run([<InlineIfLambda>] code: TaskSeqCode<'T>) : IAsyncEnumerable<'T> =
-        let runProducer state = __runtimeAsyncReturn (code state)
+        let startProducer state =
+            __runtimeAsyncReturn (
+                try
+                    TaskSeqState.awaitNextMove state
+                    code state
+                    TaskSeqState.publishResponse state (Completed)
+                with
+                | :? OperationCanceledException as oce -> TaskSeqState.publishResponse state (Canceled oce)
+                | error -> TaskSeqState.publishResponse state (Faulted (ExceptionDispatchInfo.Capture error))
+            )
 
-        TaskSeqEnumerable(runProducer) :> IAsyncEnumerable<'T>
+        let tailContinuation state = __runtimeAsyncReturn ( code state )
+
+        TaskSeqEnumerable(startProducer, tailContinuation) :> IAsyncEnumerable<'T>
 
     member inline _.Zero() : TaskSeqCode<'T> = fun _ -> ()
 
@@ -302,15 +291,15 @@ type TaskSeqBuilder() =
             finally
                 AsyncHelpers.Await(innerEnumerator.DisposeAsync())
 
-    //member inline this.YieldFromFinal(source : seq<'T>) : TaskSeqCode<'T> = this.YieldFrom source
+    member inline this.YieldFromFinal(source : seq<'T>) : TaskSeqCode<'T> = this.YieldFrom source
 
-    //member inline this.YieldFromFinal(source: IAsyncEnumerable<'T>) : TaskSeqCode<'T> =
-    //    match source with
-    //    | :? TaskSeqEnumerable<'T> as ts ->
-    //        fun state ->
-    //            TaskSeqState.publishResponse state (TailCall ts.StartProducerTask)
-    //    | _ ->
-    //        this.YieldFrom source
+    member inline this.YieldFromFinal(source: IAsyncEnumerable<'T>) : TaskSeqCode<'T> =
+        match source with
+        | :? TaskSeqEnumerable<'T> as ts ->
+            fun state ->
+                ts.TailContinuation state |> AsyncHelpers.Await
+        | _ ->
+            this.YieldFrom source
 
 [<AutoOpen>]
 module TaskSeqAwaitableExtensions =
