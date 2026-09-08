@@ -53,6 +53,7 @@ Generates optimized IL code through resumable state machines, and comes with a c
     <None Include="..\..\assets\nuget-package-readme.md" Pack="true" PackagePath="" />
     <Compile Include="AssemblyInfo.fs" />
     <Compile Include="DebugUtils.fs" />
+    <Compile Include="RuntimeTaskBuilder.fs" />
     <Compile Include="Utils.fsi" />
     <Compile Include="Utils.fs" />
     <Compile Include="TaskSeqBuilder.fsi" />

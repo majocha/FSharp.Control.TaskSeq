@@ -79,7 +79,7 @@ module internal TaskSeqInternal =
 
     /// Moves the enumerator to its first element, assuming it has just been allocated.
     /// Raises "The input sequence was empty" if there was no first element.
-    let inline moveFirstOrRaiseUnsafe (e: IAsyncEnumerator<_>) = task {
+    let inline moveFirstOrRaiseUnsafe (e: IAsyncEnumerator<_>) = runtimeTask {
         let! hasFirst = e.MoveNextAsync()
 
         if not hasFirst then
@@ -108,7 +108,7 @@ module internal TaskSeqInternal =
     let isEmpty (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let! step = e.MoveNextAsync()
             return not step
@@ -183,7 +183,7 @@ module internal TaskSeqInternal =
     let lengthBy predicate (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable i = 0
 
@@ -210,7 +210,7 @@ module internal TaskSeqInternal =
     let lengthBeforeMax max (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable i = 0
             let mutable go = true
@@ -226,7 +226,7 @@ module internal TaskSeqInternal =
     let inline maxMin ([<InlineIfLambda>] maxOrMin) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             do! moveFirstOrRaiseUnsafe e
 
@@ -241,7 +241,7 @@ module internal TaskSeqInternal =
     let inline tryMaxMin ([<InlineIfLambda>] maxOrMin) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let! hasFirst = e.MoveNextAsync()
 
@@ -260,7 +260,7 @@ module internal TaskSeqInternal =
     let inline maxMinBy ([<InlineIfLambda>] compare) ([<InlineIfLambda>] projection) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             do! moveFirstOrRaiseUnsafe e
 
@@ -283,7 +283,7 @@ module internal TaskSeqInternal =
     let inline maxMinByAsync ([<InlineIfLambda>] compare) ([<InlineIfLambda>] projectionAsync) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             do! moveFirstOrRaiseUnsafe e
 
@@ -306,7 +306,7 @@ module internal TaskSeqInternal =
     let tryExactlyOne (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
 
             match! e.MoveNextAsync() with
@@ -378,7 +378,7 @@ module internal TaskSeqInternal =
     let iter action (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
 
             // Each branch keeps its own while! loop so the match dispatch is hoisted out and
@@ -410,7 +410,7 @@ module internal TaskSeqInternal =
     let fold folder initial (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable result = initial
 
@@ -430,7 +430,7 @@ module internal TaskSeqInternal =
     let foldWhile predicate folder initial (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable result = initial
             let mutable running = true
@@ -452,7 +452,7 @@ module internal TaskSeqInternal =
     let foldWhileAsync predicate folder initial (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable result = initial
             let mutable running = true
@@ -500,7 +500,7 @@ module internal TaskSeqInternal =
     let reduce folder (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let! hasFirst = e.MoveNextAsync()
 
@@ -525,7 +525,7 @@ module internal TaskSeqInternal =
     let mapFold (folder: MapFolderAction<_, _, _, _>) initial (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable state = initial
             let results = ResizeArray()
@@ -573,7 +573,7 @@ module internal TaskSeqInternal =
     let toResizeArrayAsync (source: TaskSeq<'T>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             let res = ResizeArray<'T>()
             use e = source.GetAsyncEnumerator CancellationToken.None
 
@@ -749,7 +749,7 @@ module internal TaskSeqInternal =
         checkNonNull (nameof source1) source1
         checkNonNull (nameof source2) source2
 
-        task {
+        runtimeTask {
             use e1 = source1.GetAsyncEnumerator CancellationToken.None
             use e2 = source2.GetAsyncEnumerator CancellationToken.None
             let mutable result = 0
@@ -780,7 +780,7 @@ module internal TaskSeqInternal =
         checkNonNull (nameof source1) source1
         checkNonNull (nameof source2) source2
 
-        task {
+        runtimeTask {
             use e1 = source1.GetAsyncEnumerator CancellationToken.None
             use e2 = source2.GetAsyncEnumerator CancellationToken.None
             let mutable result = 0
@@ -844,7 +844,7 @@ module internal TaskSeqInternal =
     let tryLast (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable last = ValueNone
 
@@ -859,7 +859,7 @@ module internal TaskSeqInternal =
     let tryHead (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
 
             match! e.MoveNextAsync() with
@@ -870,7 +870,7 @@ module internal TaskSeqInternal =
     let tryTail (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
 
             match! e.MoveNextAsync() with
@@ -898,7 +898,7 @@ module internal TaskSeqInternal =
         if count < 0 then
             invalidArg (nameof count) $"The value must be non-negative, but was {count}."
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let first = ResizeArray<'T>(count)
             let mutable i = 0
@@ -927,7 +927,7 @@ module internal TaskSeqInternal =
     let tryItem index (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             if index < 0 then
                 // while the loop below wouldn't run anyway, we don't want to call MoveNext in this case
                 // to prevent side effects hitting unnecessarily
@@ -955,7 +955,7 @@ module internal TaskSeqInternal =
     let tryPick chooser (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
 
             let mutable go = true
@@ -990,7 +990,7 @@ module internal TaskSeqInternal =
     let tryFind predicate (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
 
             let mutable go = true
@@ -1029,7 +1029,7 @@ module internal TaskSeqInternal =
     let tryFindIndex predicate (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
 
             let mutable go = true
@@ -1120,7 +1120,7 @@ module internal TaskSeqInternal =
         checkNonNull (nameof source) source
 
         match predicate with
-        | Predicate syncPredicate -> task {
+        | Predicate syncPredicate -> runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable state = true
             let! cont = e.MoveNextAsync()
@@ -1136,7 +1136,7 @@ module internal TaskSeqInternal =
             return state
           }
 
-        | PredicateAsync asyncPredicate -> task {
+        | PredicateAsync asyncPredicate -> runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable state = true
             let! cont = e.MoveNextAsync()
@@ -1158,7 +1158,7 @@ module internal TaskSeqInternal =
         checkNonNull (nameof source) source
 
         match predicate with
-        | Predicate syncPredicate -> task {
+        | Predicate syncPredicate -> runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable found = false
             let! cont = e.MoveNextAsync()
@@ -1174,7 +1174,7 @@ module internal TaskSeqInternal =
             return found
           }
 
-        | PredicateAsync asyncPredicate -> task {
+        | PredicateAsync asyncPredicate -> runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable found = false
             let! cont = e.MoveNextAsync()
@@ -1195,7 +1195,7 @@ module internal TaskSeqInternal =
     let contains (value: 'T) (source: TaskSeq<'T>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let mutable found = false
             let! cont = e.MoveNextAsync()
@@ -1626,7 +1626,7 @@ module internal TaskSeqInternal =
     let groupBy (projector: ProjectorAction<'T, 'Key, _>) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let groups = Dictionary<'Key, ResizeArray<'T>>(HashIdentity.Structural)
             let order = ResizeArray<'Key>()
@@ -1665,7 +1665,7 @@ module internal TaskSeqInternal =
     let countBy (projector: ProjectorAction<'T, 'Key, _>) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let counts = Dictionary<'Key, int>(HashIdentity.Structural)
             let order = ResizeArray<'Key>()
@@ -1697,7 +1697,7 @@ module internal TaskSeqInternal =
     let partition (predicate: PredicateAction<'T, _>) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             use e = source.GetAsyncEnumerator CancellationToken.None
             let trueItems = ResizeArray<'T>()
             let falseItems = ResizeArray<'T>()
