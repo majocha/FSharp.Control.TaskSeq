@@ -2,9 +2,11 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
+    <!-- Use the runtime-async FSharp.Core built from dotnet/fsharp PR #20235 -->
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,6 +19,18 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\FSharp.Control.TaskSeq\FSharp.Control.TaskSeq.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Runtime-async requires the FSharp.Core built from dotnet/fsharp PR #20235
+      (provides __runtimeAsyncReturn and friends). The compiler itself is selected
+      through DotnetFscCompilerPath in Directory.Build.props.
+    -->
+    <Reference Include="FSharp.Core">
+      <HintPath>$(RuntimeAsyncBitsPath)\FSharp.Core\Release\net10.0\FSharp.Core.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>

@@ -1,112 +1,143 @@
 namespace Benchmarks
 
-open System.Threading
+open System
+open System.Collections.Generic
+open System.IO
 open System.Threading.Tasks
 open BenchmarkDotNet.Attributes
 open BenchmarkDotNet.Running
 open FSharp.Control
 
 module BenchmarksHelpers =
-    let rangeSource count =
-        taskSeq {
-            for value in 1 .. count do
-                yield value
-        }
+    type AsyncBufferedReader(data: byte[], blockSize: int) =
+        let stream = new MemoryStream(data, writable = false)
+        let buffered = new BufferedStream(stream, blockSize)
+        let mutable current = ValueNone
 
-    let selfRecursiveSource count : TaskSeq<int> =
-        let rec loop current : TaskSeq<int> =
+        interface IAsyncEnumerable<byte[]> with
+            member reader.GetAsyncEnumerator _ = reader :> IAsyncEnumerator<byte[]>
+
+        interface IAsyncEnumerator<byte[]> with
+            member _.Current =
+                match current with
+                | ValueSome value -> value
+                | ValueNone -> failwith "Not a current item"
+
+            member _.MoveNextAsync() =
+                task {
+                    let buffer = Array.zeroCreate blockSize
+                    let! bytesRead = buffered.ReadAsync(buffer, 0, buffer.Length)
+
+                    if bytesRead > 0 then
+                        current <- ValueSome buffer
+                        return true
+                    else
+                        current <- ValueNone
+                        return false
+                }
+                |> Task.toValueTask
+
+            member _.DisposeAsync() =
+                buffered.Dispose()
+                ValueTask()
+
+    let recursiveRange count : TaskSeq<int> =
+        let rec loop current =
             taskSeq {
-                if current <= 0 then
-                    ()
-                else
+                if current <= count then
                     yield current
-                    yield! loop (current - 1)
+                    yield! loop (current + 1)
             }
 
-        loop count
+        loop 1
 
-    let mutualRecursiveSource count : TaskSeq<int> =
-        let rec left current : TaskSeq<int> =
+    let mutuallyRecursiveRange count : TaskSeq<int> =
+        let rec odd current : TaskSeq<int> =
             taskSeq {
-                if current <= 0 then
-                    ()
-                else
+                if current <= count then
                     yield current
-                    yield! right (current - 1)
+                    yield! even (current + 1)
             }
 
-        and right current : TaskSeq<int> =
+        and even current : TaskSeq<int> =
             taskSeq {
-                if current <= 0 then
-                    ()
-                else
-                    yield current * 10
-                    yield! left (current - 1)
-            }
-
-        left count
-
-    let multipleEnumerators count enumeratorCount =
-        let source = rangeSource count
-
-        task {
-            let mutable total = 0
-
-            for _ in 1 .. enumeratorCount do
-                use e = source.GetAsyncEnumerator CancellationToken.None
-
-                while! e.MoveNextAsync() do
-                    total <- total + e.Current
-
-            return total
-        }
-
-    let mappedFilteredSource count =
-        rangeSource count
-        |> TaskSeq.map (fun x -> x * 2)
-        |> TaskSeq.filter (fun x -> x % 3 = 0)
-
-    let asyncRecursiveSource count : TaskSeq<int> =
-        let rec loop current : TaskSeq<int> =
-            taskSeq {
-                if current <= 0 then
-                    ()
-                else
-                    do! Task.Delay(0)
+                if current <= count then
                     yield current
-                    yield! loop (current - 1)
+                    yield! odd (current + 1)
             }
 
-        loop count
+        odd 1
 
-[<MemoryDiagnoser>]
+    let enumerateConcurrently enumeratorCount (source: TaskSeq<int>) =
+        [| for _ in 1 .. enumeratorCount -> source |> TaskSeq.toArrayAsync |]
+        |> Task.WhenAll
+        |> Task.map (Array.sumBy Array.length)
+
+    let utilityPipeline values =
+        let first = values |> TaskSeq.ofArray
+        let second = values |> Array.map ((*) 2) |> TaskSeq.ofArray
+
+        first
+        |> TaskSeq.append second
+        |> TaskSeq.indexed
+        |> TaskSeq.map (fun (index, value) -> value + index)
+        |> TaskSeq.filter (fun value -> value % 3 <> 0)
+        |> TaskSeq.choose (fun value ->
+            if value % 5 = 0 then Some value else None)
+        |> TaskSeq.collect (fun value -> TaskSeq.ofArray [| value; value + 1 |])
+        |> TaskSeq.distinct
+        |> TaskSeq.chunkBySize 64
+        |> TaskSeq.collectSeq Array.toSeq
+        |> TaskSeq.truncate 10_000
+        |> TaskSeq.toArrayAsync
+
+[<MemoryDiagnoser; ShortRunJob>]
 type TaskSeqBenchmarks() =
-    [<Params(100, 1000)>]
-    member val Count = 0 with get, set
+    [<Params(10_000, 100_000)>]
+    member val ArrayLength = 0 with get, set
+
+    member val Values = [||] with get, set
+
+    [<GlobalSetup>]
+    member this.Setup() =
+        this.Values <- Array.init this.ArrayLength id
+        this.Data <- Array.zeroCreate 1_048_576
 
     [<Benchmark(Baseline = true)>]
-    member this.LinearRange() : Task<int[]> =
-        BenchmarksHelpers.rangeSource this.Count |> TaskSeq.toArrayAsync
+    member this.EnumerateLargeArray() : Task<int[]> =
+        this.Values |> TaskSeq.ofArray |> TaskSeq.toArrayAsync
 
     [<Benchmark>]
-    member this.SelfRecursive() : Task<int[]> =
-        BenchmarksHelpers.selfRecursiveSource this.Count |> TaskSeq.toArrayAsync
+    member this.FilterLargeArray() : Task<int[]> =
+        this.Values
+        |> TaskSeq.ofArray
+        |> TaskSeq.filter (fun value -> value % 16 = 0)
+        |> TaskSeq.toArrayAsync
 
     [<Benchmark>]
-    member this.MutualRecursive() : Task<int[]> =
-        BenchmarksHelpers.mutualRecursiveSource this.Count |> TaskSeq.toArrayAsync
+    member this.EnumerateLargeArrayConcurrently() : Task<int> =
+        this.Values
+        |> TaskSeq.ofArray
+        |> BenchmarksHelpers.enumerateConcurrently 2
 
     [<Benchmark>]
-    member this.MultipleEnumerators() : Task<int> =
-        BenchmarksHelpers.multipleEnumerators this.Count 4
+    member this.UtilityPipeline() : Task<int[]> =
+        BenchmarksHelpers.utilityPipeline this.Values
+
+    member val Data = [||] with get, set
 
     [<Benchmark>]
-    member this.MappedAndFiltered() : Task<int[]> =
-        BenchmarksHelpers.mappedFilteredSource this.Count |> TaskSeq.toArrayAsync
+    member this.ConsumeMegabyteAsyncBufferedReader() : Task<byte[][]> =
+        let reader = BenchmarksHelpers.AsyncBufferedReader(this.Data, 256)
+        reader |> TaskSeq.toArrayAsync
 
     [<Benchmark>]
-    member this.AsyncRecursive() : Task<int[]> =
-        BenchmarksHelpers.asyncRecursiveSource this.Count |> TaskSeq.toArrayAsync
+    member this.EnumerateRecursively() : Task<int[]> =
+        BenchmarksHelpers.recursiveRange (min this.ArrayLength 500) |> TaskSeq.toArrayAsync
+
+    [<Benchmark>]
+    member this.EnumerateMutuallyRecursively() : Task<int[]> =
+        BenchmarksHelpers.mutuallyRecursiveRange (min this.ArrayLength 500) |> TaskSeq.toArrayAsync
 
 module Program =
     [<EntryPoint>]
