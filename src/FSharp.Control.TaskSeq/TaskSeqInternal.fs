@@ -4,6 +4,11 @@ open System
 open System.Collections.Generic
 open System.Threading
 open System.Threading.Tasks
+open Microsoft.FSharp.Core.CompilerServices
+open System.Runtime.CompilerServices
+
+#nowarn "57"
+#nowarn "1204"
 
 [<Struct>]
 type internal AsyncEnumStatus =
@@ -79,12 +84,12 @@ module internal TaskSeqInternal =
 
     /// Moves the enumerator to its first element, assuming it has just been allocated.
     /// Raises "The input sequence was empty" if there was no first element.
-    let inline moveFirstOrRaiseUnsafe (e: IAsyncEnumerator<_>) = runtimeTask {
-        let! hasFirst = e.MoveNextAsync()
+    let inline moveFirstOrRaiseUnsafe (e: IAsyncEnumerator<_>) = FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+        let hasFirst = AsyncHelpers.Await (e.MoveNextAsync())
 
         if not hasFirst then
             invalidArg "source" "The input task sequence was empty."
-    }
+    )
 
     /// Tests the given integer value and raises if it is -1 or lower.
     let inline raiseCannotBeNegative name value =
@@ -108,11 +113,11 @@ module internal TaskSeqInternal =
     let isEmpty (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let! step = e.MoveNextAsync()
-            return not step
-        }
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
+            let step = AsyncHelpers.Await (e.MoveNextAsync())
+            not step
+        )
 
     let empty<'T> =
         { new IAsyncEnumerable<'T> with
@@ -183,92 +188,108 @@ module internal TaskSeqInternal =
     let lengthBy predicate (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let mutable i = 0
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            match predicate with
-            | None ->
-                while! e.MoveNextAsync() do
-                    i <- i + 1
+            try
+                let mutable i = 0
 
-            | Some(Predicate predicate) ->
-                while! e.MoveNextAsync() do
-                    if predicate e.Current then
+                match predicate with
+                | None ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
                         i <- i + 1
 
-            | Some(PredicateAsync predicate) ->
-                while! e.MoveNextAsync() do
-                    match! predicate e.Current with
-                    | true -> i <- i + 1
-                    | false -> ()
+                | Some(Predicate predicate) ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        if predicate e.Current then
+                            i <- i + 1
 
-            return i
-        }
+                | Some(PredicateAsync predicate) ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        match AsyncHelpers.Await (predicate e.Current) with
+                        | true -> i <- i + 1
+                        | false -> ()
+
+                i
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     /// Returns length unconditionally, or based on a predicate
     let lengthBeforeMax max (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let mutable i = 0
-            let mutable go = true
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            while go && i < max do
-                let! hasMore = e.MoveNextAsync()
+            try
+                let mutable i = 0
+                let mutable go = true
 
-                if hasMore then i <- i + 1 else go <- false
+                while go && i < max do
+                    let hasMore = AsyncHelpers.Await (e.MoveNextAsync())
 
-            return i
-        }
+                    if hasMore then i <- i + 1 else go <- false
+
+                i
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     let inline maxMin ([<InlineIfLambda>] maxOrMin) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            do! moveFirstOrRaiseUnsafe e
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            let mutable acc = e.Current
+            try
+                AsyncHelpers.Await (moveFirstOrRaiseUnsafe e)
 
-            while! e.MoveNextAsync() do
-                acc <- maxOrMin e.Current acc
+                let mutable acc = e.Current
 
-            return acc
-        }
+                while AsyncHelpers.Await (e.MoveNextAsync()) do
+                    acc <- maxOrMin e.Current acc
+
+                acc
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     let inline tryMaxMin ([<InlineIfLambda>] maxOrMin) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let! hasFirst = e.MoveNextAsync()
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            if not hasFirst then
-                return None
-            else
-                let mutable acc = e.Current
+            try
+                let hasFirst = AsyncHelpers.Await (e.MoveNextAsync())
 
-                while! e.MoveNextAsync() do
-                    acc <- maxOrMin e.Current acc
+                if not hasFirst then
+                    None
+                else
+                    let mutable acc = e.Current
 
-                return Some acc
-        }
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        acc <- maxOrMin e.Current acc
+
+                    Some acc
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     // 'compare' is either `<` or `>` (i.e, less-than, greater-than resp.)
     let inline maxMinBy ([<InlineIfLambda>] compare) ([<InlineIfLambda>] projection) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            do! moveFirstOrRaiseUnsafe e
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
+            AsyncHelpers.Await (moveFirstOrRaiseUnsafe e)
 
             let value = e.Current
             let mutable accProjection = projection value
             let mutable accValue = value
 
-            while! e.MoveNextAsync() do
+            while AsyncHelpers.Await (e.MoveNextAsync()) do
                 let value = e.Current
                 let currentProjection = projection value
 
@@ -276,52 +297,56 @@ module internal TaskSeqInternal =
                     accProjection <- currentProjection
                     accValue <- value
 
-            return accValue
-        }
+            accValue
+        )
 
     // 'compare' is either `<` or `>` (i.e, less-than, greater-than resp.)
     let inline maxMinByAsync ([<InlineIfLambda>] compare) ([<InlineIfLambda>] projectionAsync) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            do! moveFirstOrRaiseUnsafe e
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            let value = e.Current
-            let! projValue = projectionAsync value
-            let mutable accProjection = projValue
-            let mutable accValue = value
+            try
+                AsyncHelpers.Await (moveFirstOrRaiseUnsafe e)
 
-            while! e.MoveNextAsync() do
                 let value = e.Current
-                let! currentProjection = projectionAsync value
+                let projValue = AsyncHelpers.Await (projectionAsync value : Task<_>)
+                let mutable accProjection = projValue
+                let mutable accValue = value
 
-                if compare accProjection currentProjection then
-                    accProjection <- currentProjection
-                    accValue <- value
+                while AsyncHelpers.Await (e.MoveNextAsync()) do
+                    let value = e.Current
+                    let currentProjection = AsyncHelpers.Await (projectionAsync value : Task<_>)
 
-            return accValue
-        }
+                    if compare accProjection currentProjection then
+                        accProjection <- currentProjection
+                        accValue <- value
+
+                accValue
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     let tryExactlyOne (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            match! e.MoveNextAsync() with
+            match AsyncHelpers.Await (e.MoveNextAsync()) with
             | true ->
                 // grab first item and test if there's a second item
                 let current = e.Current
 
-                match! e.MoveNextAsync() with
-                | true -> return None // 2 or more items
-                | false -> return Some current // exactly one
+                match AsyncHelpers.Await (e.MoveNextAsync()) with
+                | true -> None // 2 or more items
+                | false -> Some current // exactly one
 
             | false ->
                 // zero items
-                return None
-        }
+                None
+        )
 
 
     let init count initializer = taskSeq {
@@ -378,101 +403,116 @@ module internal TaskSeqInternal =
     let iter action (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            // Each branch keeps its own while! loop so the match dispatch is hoisted out and
-            // the JIT sees a tight, single-case loop (same pattern as sum/sumBy etc.).
-            match action with
-            | CountableAction action ->
-                let mutable i = 0
+            try
+                // Each branch keeps its own while! loop so the match dispatch is hoisted out and
+                // the JIT sees a tight, single-case loop (same pattern as sum/sumBy etc.).
+                match action with
+                | CountableAction action ->
+                    let mutable i = 0
 
-                while! e.MoveNextAsync() do
-                    action i e.Current
-                    i <- i + 1
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        action i e.Current
+                        i <- i + 1
 
-            | SimpleAction action ->
-                while! e.MoveNextAsync() do
-                    action e.Current
+                | SimpleAction action ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        action e.Current
 
-            | AsyncCountableAction action ->
-                let mutable i = 0
+                | AsyncCountableAction action ->
+                    let mutable i = 0
 
-                while! e.MoveNextAsync() do
-                    do! action i e.Current
-                    i <- i + 1
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        AsyncHelpers.Await (action i e.Current)
+                        i <- i + 1
 
-            | AsyncSimpleAction action ->
-                while! e.MoveNextAsync() do
-                    do! action e.Current
-        }
+                | AsyncSimpleAction action ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        AsyncHelpers.Await (action e.Current)
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     let fold folder initial (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let mutable result = initial
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            match folder with
-            | FolderAction folder ->
-                while! e.MoveNextAsync() do
-                    result <- folder result e.Current
+            try
+                let mutable result = initial
 
-            | AsyncFolderAction folder ->
-                while! e.MoveNextAsync() do
-                    let! tempResult = folder result e.Current
-                    result <- tempResult
+                match folder with
+                | FolderAction folder ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        result <- folder result e.Current
 
-            return result
-        }
+                | AsyncFolderAction folder ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        let tempResult = AsyncHelpers.Await (folder result e.Current : Task<_>)
+                        result <- tempResult
+
+                result
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     let foldWhile predicate folder initial (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let mutable result = initial
-            let mutable running = true
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            while running do
-                let! hasNext = e.MoveNextAsync()
+            try
+                let mutable result = initial
+                let mutable running = true
 
-                if hasNext then
-                    if predicate result e.Current then
-                        result <- folder result e.Current
+                while running do
+                    let hasNext = AsyncHelpers.Await (e.MoveNextAsync())
+
+                    if hasNext then
+                        if predicate result e.Current then
+                            result <- folder result e.Current
+                        else
+                            running <- false
                     else
                         running <- false
-                else
-                    running <- false
 
-            return result
-        }
+                result
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     let foldWhileAsync predicate folder initial (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let mutable result = initial
-            let mutable running = true
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            while running do
-                let! hasNext = e.MoveNextAsync()
+            try
+                let mutable result = initial
+                let mutable running = true
 
-                if hasNext then
-                    let! keepGoing = predicate result e.Current
+                while running do
+                    let hasNext = AsyncHelpers.Await (e.MoveNextAsync())
 
-                    if keepGoing then
-                        let! newState = folder result e.Current
-                        result <- newState
+                    if hasNext then
+                        let keepGoing = AsyncHelpers.Await (predicate result e.Current : Task<bool>)
+
+                        if keepGoing then
+                            let newState = AsyncHelpers.Await (folder result e.Current : Task<_>)
+                            result <- newState
+                        else
+                            running <- false
                     else
                         running <- false
-                else
-                    running <- false
 
-            return result
-        }
+                result
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     let scan folder initial (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
@@ -500,51 +540,59 @@ module internal TaskSeqInternal =
     let reduce folder (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let! hasFirst = e.MoveNextAsync()
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            if not hasFirst then
-                raiseEmptySeq ()
+            try
+                let hasFirst = AsyncHelpers.Await (e.MoveNextAsync())
 
-            let mutable result = e.Current
+                if not hasFirst then
+                    raiseEmptySeq ()
 
-            match folder with
-            | FolderAction folder ->
-                while! e.MoveNextAsync() do
-                    result <- folder result e.Current
+                let mutable result = e.Current
 
-            | AsyncFolderAction folder ->
-                while! e.MoveNextAsync() do
-                    let! tempResult = folder result e.Current
-                    result <- tempResult
+                match folder with
+                | FolderAction folder ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        result <- folder result e.Current
 
-            return result
-        }
+                | AsyncFolderAction folder ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        let tempResult = AsyncHelpers.Await (folder result e.Current : Task<_>)
+                        result <- tempResult
+
+                result
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     let mapFold (folder: MapFolderAction<_, _, _, _>) initial (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let mutable state = initial
-            let results = ResizeArray()
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            match folder with
-            | MapFolderAction folder ->
-                while! e.MoveNextAsync() do
-                    let result, newState = folder state e.Current
-                    results.Add result
-                    state <- newState
+            try
+                let mutable state = initial
+                let results = ResizeArray()
 
-            | AsyncMapFolderAction folder ->
-                while! e.MoveNextAsync() do
-                    let! (result, newState) = folder state e.Current
-                    results.Add result
-                    state <- newState
+                match folder with
+                | MapFolderAction folder ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        let result, newState = folder state e.Current
+                        results.Add result
+                        state <- newState
 
-            return results.ToArray(), state
-        }
+                | AsyncMapFolderAction folder ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        let (result, newState) = AsyncHelpers.Await (folder state e.Current : Task<_>)
+                        results.Add result
+                        state <- newState
+
+                results.ToArray(), state
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     let threadState (folder: 'State -> 'T -> 'U * 'State) initial (source: TaskSeq<'T>) : TaskSeq<'U> =
         checkNonNull (nameof source) source
@@ -573,15 +621,18 @@ module internal TaskSeqInternal =
     let toResizeArrayAsync (source: TaskSeq<'T>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
             let res = ResizeArray<'T>()
-            use e = source.GetAsyncEnumerator CancellationToken.None
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            while! e.MoveNextAsync() do
-                res.Add e.Current
+            try
+                while AsyncHelpers.Await (e.MoveNextAsync()) do
+                    res.Add e.Current
 
-            return res
-        }
+                res
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
 
     let toResizeArrayAndMapAsync mapper source = (toResizeArrayAsync >> Task.map mapper) source
 
@@ -749,63 +800,73 @@ module internal TaskSeqInternal =
         checkNonNull (nameof source1) source1
         checkNonNull (nameof source2) source2
 
-        runtimeTask {
-            use e1 = source1.GetAsyncEnumerator CancellationToken.None
-            use e2 = source2.GetAsyncEnumerator CancellationToken.None
-            let mutable result = 0
-            let! step1 = e1.MoveNextAsync()
-            let! step2 = e2.MoveNextAsync()
-            let mutable has1 = step1
-            let mutable has2 = step2
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e1 = source1.GetAsyncEnumerator CancellationToken.None
+            let e2 = source2.GetAsyncEnumerator CancellationToken.None
 
-            while result = 0 && (has1 || has2) do
-                match has1, has2 with
-                | false, _ -> result <- -1 // source1 is shorter: less than
-                | _, false -> result <- 1 // source2 is shorter: greater than
-                | true, true ->
-                    let cmp = comparer e1.Current e2.Current
+            try
+                let mutable result = 0
+                let step1 = AsyncHelpers.Await (e1.MoveNextAsync())
+                let step2 = AsyncHelpers.Await (e2.MoveNextAsync())
+                let mutable has1 = step1
+                let mutable has2 = step2
 
-                    if cmp <> 0 then
-                        result <- cmp
-                    else
-                        let! s1 = e1.MoveNextAsync()
-                        let! s2 = e2.MoveNextAsync()
-                        has1 <- s1
-                        has2 <- s2
+                while result = 0 && (has1 || has2) do
+                    match has1, has2 with
+                    | false, _ -> result <- -1 // source1 is shorter: less than
+                    | _, false -> result <- 1 // source2 is shorter: greater than
+                    | true, true ->
+                        let cmp = comparer e1.Current e2.Current
 
-            return result
-        }
+                        if cmp <> 0 then
+                            result <- cmp
+                        else
+                            let s1 = AsyncHelpers.Await (e1.MoveNextAsync())
+                            let s2 = AsyncHelpers.Await (e2.MoveNextAsync())
+                            has1 <- s1
+                            has2 <- s2
+
+                result
+            finally
+                AsyncHelpers.Await (e1.DisposeAsync())
+                AsyncHelpers.Await (e2.DisposeAsync())
+        )
 
     let compareWithAsync (comparer: 'T -> 'T -> #Task<int>) (source1: TaskSeq<'T>) (source2: TaskSeq<'T>) =
         checkNonNull (nameof source1) source1
         checkNonNull (nameof source2) source2
 
-        runtimeTask {
-            use e1 = source1.GetAsyncEnumerator CancellationToken.None
-            use e2 = source2.GetAsyncEnumerator CancellationToken.None
-            let mutable result = 0
-            let! step1 = e1.MoveNextAsync()
-            let! step2 = e2.MoveNextAsync()
-            let mutable has1 = step1
-            let mutable has2 = step2
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e1 = source1.GetAsyncEnumerator CancellationToken.None
+            let e2 = source2.GetAsyncEnumerator CancellationToken.None
 
-            while result = 0 && (has1 || has2) do
-                match has1, has2 with
-                | false, _ -> result <- -1 // source1 is shorter: less than
-                | _, false -> result <- 1 // source2 is shorter: greater than
-                | true, true ->
-                    let! cmp = comparer e1.Current e2.Current
+            try
+                let mutable result = 0
+                let step1 = AsyncHelpers.Await (e1.MoveNextAsync())
+                let step2 = AsyncHelpers.Await (e2.MoveNextAsync())
+                let mutable has1 = step1
+                let mutable has2 = step2
 
-                    if cmp <> 0 then
-                        result <- cmp
-                    else
-                        let! s1 = e1.MoveNextAsync()
-                        let! s2 = e2.MoveNextAsync()
-                        has1 <- s1
-                        has2 <- s2
+                while result = 0 && (has1 || has2) do
+                    match has1, has2 with
+                    | false, _ -> result <- -1 // source1 is shorter: less than
+                    | _, false -> result <- 1 // source2 is shorter: greater than
+                    | true, true ->
+                        let cmp = AsyncHelpers.Await (comparer e1.Current e2.Current)
 
-            return result
-        }
+                        if cmp <> 0 then
+                            result <- cmp
+                        else
+                            let s1 = AsyncHelpers.Await (e1.MoveNextAsync())
+                            let s2 = AsyncHelpers.Await (e2.MoveNextAsync())
+                            has1 <- s1
+                            has2 <- s2
+
+                result
+            finally
+                AsyncHelpers.Await (e1.DisposeAsync())
+                AsyncHelpers.Await (e2.DisposeAsync())
+        )
 
     let collect (binder: _ -> #IAsyncEnumerable<_>) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
@@ -844,46 +905,44 @@ module internal TaskSeqInternal =
     let tryLast (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
             let mutable last = ValueNone
 
-            while! e.MoveNextAsync() do
+            while AsyncHelpers.Await (e.MoveNextAsync()) do
                 last <- ValueSome e.Current
 
             match last with
-            | ValueSome value -> return Some value
-            | ValueNone -> return None
-        }
+            | ValueSome value -> Some value
+            | ValueNone -> None
+        )
 
     let tryHead (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            match! e.MoveNextAsync() with
-            | true -> return Some e.Current
-            | false -> return None
-        }
+            match AsyncHelpers.Await (e.MoveNextAsync()) with
+            | true -> Some e.Current
+            | false -> None
+        )
 
     let tryTail (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
             let e = source.GetAsyncEnumerator CancellationToken.None
 
-            match! e.MoveNextAsync() with
-            | false -> return None
+            match AsyncHelpers.Await (e.MoveNextAsync()) with
+            | false -> None
             | true ->
-                return
-                    taskSeq {
-                        use e = e
-                        while! e.MoveNextAsync() do
-                            yield e.Current
-                    }
-                    |> Some
-        }
+                Some (taskSeq {
+                    let e = e
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        yield e.Current
+                })
+        )
 
     let firstOrDefault defaultValue source =
         tryHead source
@@ -899,14 +958,14 @@ module internal TaskSeqInternal =
         if count < 0 then
             invalidArg (nameof count) $"The value must be non-negative, but was {count}."
 
-        runtimeTask {
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
             let e = source.GetAsyncEnumerator CancellationToken.None
             let first = ResizeArray<'T>(count)
             let mutable i = 0
             let mutable go = true
 
             while go && i < count do
-                let! step = e.MoveNextAsync()
+                let step = AsyncHelpers.Await (e.MoveNextAsync())
 
                 if step then
                     first.Add e.Current
@@ -915,52 +974,49 @@ module internal TaskSeqInternal =
                     go <- false
 
             let rest = taskSeq {
-                use e = e
+                let e = e
                 if go then
-                    while! e.MoveNextAsync() do
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
                         yield e.Current
             }
 
-            return first.ToArray(), rest
-        }
+            first.ToArray(), rest
+        )
 
     let tryItem index (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
             if index < 0 then
-                // while the loop below wouldn't run anyway, we don't want to call MoveNext in this case
-                // to prevent side effects hitting unnecessarily
-                return None
+                None
             else
-                use e = source.GetAsyncEnumerator CancellationToken.None
+                let e = source.GetAsyncEnumerator CancellationToken.None
                 let mutable go = true
                 let mutable idx = 0
                 let mutable foundItem = None
-                let! step = e.MoveNextAsync()
+                let step = AsyncHelpers.Await (e.MoveNextAsync())
                 go <- step
 
-                // advance past the first `index` elements, then capture the current element
                 while go && idx < index do
-                    let! step = e.MoveNextAsync()
+                    let step = AsyncHelpers.Await (e.MoveNextAsync())
                     go <- step
                     idx <- idx + 1
 
                 if go then
                     foundItem <- Some e.Current
 
-                return foundItem
-        }
+                foundItem
+        )
 
     let tryPick chooser (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
             let mutable go = true
             let mutable foundItem = None
-            let! step = e.MoveNextAsync()
+            let step = AsyncHelpers.Await (e.MoveNextAsync())
             go <- step
 
             match chooser with
@@ -971,31 +1027,31 @@ module internal TaskSeqInternal =
                         foundItem <- Some value
                         go <- false
                     | None ->
-                        let! step = e.MoveNextAsync()
+                        let step = AsyncHelpers.Await (e.MoveNextAsync())
                         go <- step
 
             | TryPickAsync picker ->
                 while go do
-                    match! picker e.Current with
+                    match AsyncHelpers.Await (picker e.Current) with
                     | Some value ->
                         foundItem <- Some value
                         go <- false
                     | None ->
-                        let! step = e.MoveNextAsync()
+                        let step = AsyncHelpers.Await (e.MoveNextAsync())
                         go <- step
 
-            return foundItem
-        }
+            foundItem
+        )
 
     let tryFind predicate (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
             let mutable go = true
             let mutable foundItem = None
-            let! step = e.MoveNextAsync()
+            let step = AsyncHelpers.Await (e.MoveNextAsync())
             go <- step
 
             match predicate with
@@ -1008,34 +1064,34 @@ module internal TaskSeqInternal =
                         foundItem <- Some current
                         go <- false
                     | false ->
-                        let! step = e.MoveNextAsync()
+                        let step = AsyncHelpers.Await (e.MoveNextAsync())
                         go <- step
 
             | PredicateAsync predicate ->
                 while go do
                     let current = e.Current
 
-                    match! predicate current with
+                    match AsyncHelpers.Await (predicate current) with
                     | true ->
                         foundItem <- Some current
                         go <- false
                     | false ->
-                        let! step = e.MoveNextAsync()
+                        let step = AsyncHelpers.Await (e.MoveNextAsync())
                         go <- step
 
-            return foundItem
-        }
+            foundItem
+        )
 
     let tryFindIndex predicate (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
             let mutable go = true
             let mutable isFound = false
             let mutable index = -1
-            let! step = e.MoveNextAsync()
+            let step = AsyncHelpers.Await (e.MoveNextAsync())
             go <- step
 
             match predicate with
@@ -1045,21 +1101,21 @@ module internal TaskSeqInternal =
                     isFound <- predicate e.Current
 
                     if not isFound then
-                        let! step = e.MoveNextAsync()
+                        let step = AsyncHelpers.Await (e.MoveNextAsync())
                         go <- step
 
             | PredicateAsync predicate ->
                 while go && not isFound do
                     index <- index + 1
-                    let! predicateResult = predicate e.Current
+                    let predicateResult = AsyncHelpers.Await (predicate e.Current)
                     isFound <- predicateResult
 
                     if not isFound then
-                        let! step = e.MoveNextAsync()
+                        let step = AsyncHelpers.Await (e.MoveNextAsync())
                         go <- step
 
-            if isFound then return Some index else return None
-        }
+            if isFound then Some index else None
+        )
 
     let choose chooser (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
@@ -1120,96 +1176,96 @@ module internal TaskSeqInternal =
         checkNonNull (nameof source) source
 
         match predicate with
-        | Predicate syncPredicate -> runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        | Predicate syncPredicate -> FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
             let mutable state = true
-            let! cont = e.MoveNextAsync()
+            let cont = AsyncHelpers.Await (e.MoveNextAsync())
             let mutable hasMore = cont
 
             while state && hasMore do
                 state <- syncPredicate e.Current
 
                 if state then
-                    let! cont = e.MoveNextAsync()
+                    let cont = AsyncHelpers.Await (e.MoveNextAsync())
                     hasMore <- cont
 
-            return state
-          }
+            state
+          )
 
-        | PredicateAsync asyncPredicate -> runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        | PredicateAsync asyncPredicate -> FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
             let mutable state = true
-            let! cont = e.MoveNextAsync()
+            let cont = AsyncHelpers.Await (e.MoveNextAsync())
             let mutable hasMore = cont
 
             while state && hasMore do
-                let! pred = asyncPredicate e.Current
+                let pred = AsyncHelpers.Await (asyncPredicate e.Current)
                 state <- pred
 
                 if state then
-                    let! cont = e.MoveNextAsync()
+                    let cont = AsyncHelpers.Await (e.MoveNextAsync())
                     hasMore <- cont
 
-            return state
-          }
+            state
+          )
 
     /// Direct bool-returning exists, avoiding the Option<'T> allocation that tryFind+isSome would incur.
     let exists predicate (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
         match predicate with
-        | Predicate syncPredicate -> runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        | Predicate syncPredicate -> FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
             let mutable found = false
-            let! cont = e.MoveNextAsync()
+            let cont = AsyncHelpers.Await (e.MoveNextAsync())
             let mutable hasMore = cont
 
             while not found && hasMore do
                 found <- syncPredicate e.Current
 
                 if not found then
-                    let! cont = e.MoveNextAsync()
+                    let cont = AsyncHelpers.Await (e.MoveNextAsync())
                     hasMore <- cont
 
-            return found
-          }
+            found
+          )
 
-        | PredicateAsync asyncPredicate -> runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        | PredicateAsync asyncPredicate -> FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
             let mutable found = false
-            let! cont = e.MoveNextAsync()
+            let cont = AsyncHelpers.Await (e.MoveNextAsync())
             let mutable hasMore = cont
 
             while not found && hasMore do
-                let! pred = asyncPredicate e.Current
+                let pred = AsyncHelpers.Await (asyncPredicate e.Current)
                 found <- pred
 
                 if not found then
-                    let! cont = e.MoveNextAsync()
+                    let cont = AsyncHelpers.Await (e.MoveNextAsync())
                     hasMore <- cont
 
-            return found
-          }
+            found
+          )
 
     /// Direct bool-returning contains, avoiding the Option<'T> allocation and closure that tryFind+isSome would incur.
     let contains (value: 'T) (source: TaskSeq<'T>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
             let mutable found = false
-            let! cont = e.MoveNextAsync()
+            let cont = AsyncHelpers.Await (e.MoveNextAsync())
             let mutable hasMore = cont
 
             while not found && hasMore do
                 if e.Current = value then
                     found <- true
                 else
-                    let! cont = e.MoveNextAsync()
+                    let cont = AsyncHelpers.Await (e.MoveNextAsync())
                     hasMore <- cont
 
-            return found
-        }
+            found
+        )
 
     let distinct (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
@@ -1626,100 +1682,237 @@ module internal TaskSeqInternal =
     let groupBy (projector: ProjectorAction<'T, 'Key, _>) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let groups = Dictionary<'Key, ResizeArray<'T>>(HashIdentity.Structural)
-            let order = ResizeArray<'Key>()
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            match projector with
-            | ProjectorAction proj ->
-                while! e.MoveNextAsync() do
-                    let key = proj e.Current
-                    let mutable ra = Unchecked.defaultof<_>
+            try
+                let groups = Dictionary<'Key, ResizeArray<'T>>(HashIdentity.Structural)
+                let order = ResizeArray<'Key>()
 
-                    if not (groups.TryGetValue(key, &ra)) then
-                        ra <- ResizeArray()
-                        groups[key] <- ra
-                        order.Add key
+                match projector with
+                | ProjectorAction proj ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        let key = proj e.Current
+                        let mutable ra = Unchecked.defaultof<_>
 
-                    ra.Add e.Current
+                        if not (groups.TryGetValue(key, &ra)) then
+                            ra <- ResizeArray()
+                            groups[key] <- ra
+                            order.Add key
 
-            | AsyncProjectorAction proj ->
-                while! e.MoveNextAsync() do
-                    let! key = proj e.Current
-                    let mutable ra = Unchecked.defaultof<_>
+                        ra.Add e.Current
 
-                    if not (groups.TryGetValue(key, &ra)) then
-                        ra <- ResizeArray()
-                        groups[key] <- ra
-                        order.Add key
+                | AsyncProjectorAction proj ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        let key = AsyncHelpers.Await (proj e.Current : Task<_>)
+                        let mutable ra = Unchecked.defaultof<_>
 
-                    ra.Add e.Current
+                        if not (groups.TryGetValue(key, &ra)) then
+                            ra <- ResizeArray()
+                            groups[key] <- ra
+                            order.Add key
 
-            return
+                        ra.Add e.Current
+
                 Array.init order.Count (fun i ->
                     let k = order[i]
                     k, groups[k].ToArray())
-        }
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
+
 
     let countBy (projector: ProjectorAction<'T, 'Key, _>) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let counts = Dictionary<'Key, int>(HashIdentity.Structural)
-            let order = ResizeArray<'Key>()
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            match projector with
-            | ProjectorAction proj ->
-                while! e.MoveNextAsync() do
-                    let key = proj e.Current
-                    let mutable count = 0
+            try
+                let counts = Dictionary<'Key, int>(HashIdentity.Structural)
+                let order = ResizeArray<'Key>()
 
-                    if not (counts.TryGetValue(key, &count)) then
-                        order.Add key
+                match projector with
+                | ProjectorAction proj ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        let key = proj e.Current
+                        let mutable count = 0
 
-                    counts[key] <- count + 1
+                        if not (counts.TryGetValue(key, &count)) then
+                            order.Add key
 
-            | AsyncProjectorAction proj ->
-                while! e.MoveNextAsync() do
-                    let! key = proj e.Current
-                    let mutable count = 0
+                        counts[key] <- count + 1
 
-                    if not (counts.TryGetValue(key, &count)) then
-                        order.Add key
+                | AsyncProjectorAction proj ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        let key = AsyncHelpers.Await (proj e.Current : Task<_>)
+                        let mutable count = 0
 
-                    counts[key] <- count + 1
+                        if not (counts.TryGetValue(key, &count)) then
+                            order.Add key
 
-            return Array.init order.Count (fun i -> let k = order[i] in k, counts[k])
-        }
+                        counts[key] <- count + 1
+
+                Array.init order.Count (fun i -> let k = order[i] in k, counts[k])
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     let partition (predicate: PredicateAction<'T, _>) (source: TaskSeq<_>) =
         checkNonNull (nameof source) source
 
-        runtimeTask {
-            use e = source.GetAsyncEnumerator CancellationToken.None
-            let trueItems = ResizeArray<'T>()
-            let falseItems = ResizeArray<'T>()
+        FSharp.Core.CompilerServices.StateMachineHelpers.__runtimeAsyncReturn (
+            let e = source.GetAsyncEnumerator CancellationToken.None
 
-            match predicate with
-            | Predicate pred ->
-                while! e.MoveNextAsync() do
-                    let item = e.Current
+            try
+                let trueItems = ResizeArray<'T>()
+                let falseItems = ResizeArray<'T>()
 
-                    if pred item then
-                        trueItems.Add item
-                    else
-                        falseItems.Add item
+                match predicate with
+                | Predicate pred ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        let item = e.Current
 
-            | PredicateAsync pred ->
-                while! e.MoveNextAsync() do
-                    let item = e.Current
-                    let! result = pred item
-                    if result then trueItems.Add item else falseItems.Add item
+                        if pred item then
+                            trueItems.Add item
+                        else
+                            falseItems.Add item
 
-            return trueItems.ToArray(), falseItems.ToArray()
-        }
+                | PredicateAsync pred ->
+                    while AsyncHelpers.Await (e.MoveNextAsync()) do
+                        let item = e.Current
+                        let result = AsyncHelpers.Await (pred item : Task<bool>)
+                        if result then trueItems.Add item else falseItems.Add item
+
+                trueItems.ToArray(), falseItems.ToArray()
+            finally
+                AsyncHelpers.Await (e.DisposeAsync())
+        )
+
 
     let chunkBySize chunkSize (source: TaskSeq<'T>) : TaskSeq<'T[]> =
         if chunkSize < 1 then
@@ -1830,3 +2023,4 @@ module internal TaskSeqInternal =
 
                     yield result
         }
+

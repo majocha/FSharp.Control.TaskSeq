@@ -42,6 +42,8 @@ Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FSharp.Control.TaskSeq.Benc
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "benchmarks", "benchmarks", "{570A54C4-8355-4616-AEC1-6C5AD2B2B5B8}"
 EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FSharp.Control.TaskSeq.UtilityPipelineSample", "samples\FSharp.Control.TaskSeq.UtilityPipelineSample\FSharp.Control.TaskSeq.UtilityPipelineSample.fsproj", "{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -112,6 +114,18 @@ Global
 		{095080CE-511D-55C2-D153-4FAC572EDDFB}.Release|x64.Build.0 = Release|Any CPU
 		{095080CE-511D-55C2-D153-4FAC572EDDFB}.Release|x86.ActiveCfg = Release|Any CPU
 		{095080CE-511D-55C2-D153-4FAC572EDDFB}.Release|x86.Build.0 = Release|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Debug|x64.Build.0 = Debug|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Debug|x86.Build.0 = Debug|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Release|x64.ActiveCfg = Release|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Release|x64.Build.0 = Release|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Release|x86.ActiveCfg = Release|Any CPU
+		{AB08CA74-DBEF-984A-C3F7-EAA3E9C6DA39}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
