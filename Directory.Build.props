@@ -1,7 +1,8 @@
 <Project>
   <Import Project="Version.props" />
   <PropertyGroup>
-    <RuntimeAsyncBitsPath Condition="'$(RuntimeAsyncBitsPath)' == ''">D:\runtime-async-bits</RuntimeAsyncBitsPath>
+    <RuntimeAsyncBitsPath Condition="'$(RuntimeAsyncBitsPath)' == ''">D:\source\fsharp\artifacts\bin</RuntimeAsyncBitsPath>
     <DotnetFscCompilerPath>$(RuntimeAsyncBitsPath)\fsc\Release\net11.0\fsc.dll</DotnetFscCompilerPath>
+      <LangVersion>preview</LangVersion>
   </PropertyGroup>
 </Project>

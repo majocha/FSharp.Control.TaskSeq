@@ -5,6 +5,7 @@
     <TreatWarningsAsErrors>True</TreatWarningsAsErrors>
     <!-- Use the runtime-async FSharp.Core built from dotnet/fsharp PR #20235 -->
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+    <LangVersion>preview</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>
