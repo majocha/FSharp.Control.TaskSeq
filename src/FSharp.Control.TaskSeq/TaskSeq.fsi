@@ -284,7 +284,7 @@ type TaskSeq =
     /// <returns>The largest element of the sequence.</returns>
     /// <exception cref="T:ArgumentNullException">Thrown when the input sequence is null.</exception>
     /// <exception cref="T:ArgumentException">Thrown when the input sequence is empty.</exception>
-    static member maxByAsync: projection: ('T -> #Task<'U>) -> source: TaskSeq<'T> -> Task<'T> when 'U: comparison
+    static member maxByAsync: projection: ('T -> Task<'U>) -> source: TaskSeq<'T> -> Task<'T> when 'U: comparison
 
     /// <summary>
     /// Returns the smallest of all elements of the task sequence, compared via <see cref="Operators.min" />
@@ -298,7 +298,7 @@ type TaskSeq =
     /// <returns>The smallest element of the sequence.</returns>
     /// <exception cref="T:ArgumentNullException">Thrown when the input sequence is null.</exception>
     /// <exception cref="T:ArgumentException">Thrown when the input sequence is empty.</exception>
-    static member minByAsync: projection: ('T -> #Task<'U>) -> source: TaskSeq<'T> -> Task<'T> when 'U: comparison
+    static member minByAsync: projection: ('T -> Task<'U>) -> source: TaskSeq<'T> -> Task<'T> when 'U: comparison
 
     /// <summary>
     /// Returns a task sequence that is given by the delayed specification of a task sequence.
@@ -1344,7 +1344,7 @@ type TaskSeq =
     /// and then yields the remaining elements (see also <see cref="TaskSeq.skipWhile" />). It will thus always skip
     /// at least one element of a non-empty sequence, or returns the empty task sequence if the input is empty.
     /// If <paramref name="predicate" /> is asynchronous, consider using <see cref="TaskSeq.skipWhileInclusiveAsync" />.
-    /// </summary>`
+    /// </summary>
     ///
     /// <param name="predicate">A function that evaluates to false for the final item to be skipped.</param>
     /// <param name="source">The input task sequence.</param>
@@ -1354,7 +1354,7 @@ type TaskSeq =
 
     /// <summary>
     /// Returns a task sequence that, when iterated, skips elements of the underlying sequence until the given
-    /// function <paramref name="predicate" /> returns <see cref="false" />, <i>also skips that element</i>
+    /// asynchronous function <paramref name="predicate" /> returns <see cref="false" />, <i>also skips that element</i>
     /// and then yields the remaining elements (see also <see cref="TaskSeq.skipWhileAsync" />). It will thus always skip
     /// at least one element of a non-empty sequence, or returns the empty task sequence if the input is empty.
     /// If <paramref name="predicate" /> is synchronous, consider using <see cref="TaskSeq.skipWhileInclusive" />.
@@ -1418,7 +1418,7 @@ type TaskSeq =
     /// If <paramref name="predicate" /> is asynchronous, consider using <see cref="TaskSeq.tryFindIndexAsync" />.
     /// </summary>
     ///
-    /// <param name="predicate">A function that evaluates to a <see cref="bool" /> when given an item in the sequence.</param>
+    /// <param name="predicate">A function to test an element of the input sequence.</param>
     /// <param name="source">The input task sequence.</param>
     /// <returns>The found element or <see cref="None" />.</returns>
     /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
@@ -1430,7 +1430,7 @@ type TaskSeq =
     /// If <paramref name="predicate" /> is synchronous, consider using <see cref="TaskSeq.tryFindIndex" />.
     /// </summary>
     ///
-    /// <param name="predicate">An asynchronous function that evaluates to a <see cref="bool" /> when given an item in the sequence.</param>
+    /// <param name="predicate">An asynchronous function to test an element of the input sequence.</param>
     /// <param name="source">The input task sequence.</param>
     /// <returns>The found element or <see cref="None" />.</returns>
     /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
@@ -1821,7 +1821,7 @@ type TaskSeq =
     /// <param name="source1">The first input task sequence.</param>
     /// <param name="source2">The second input task sequence.</param>
     /// <param name="source3">The third input task sequence.</param>
-    /// <returns>The result task sequence of mapped values.</returns>
+    /// <returns>The result task sequence of triples.</returns>
     /// <exception cref="T:ArgumentNullException">Thrown when any of the three input task sequences is null.</exception>
     static member zipWith3:
         mapping: ('T1 -> 'T2 -> 'T3 -> 'V) ->
@@ -1881,51 +1881,12 @@ type TaskSeq =
     static member compareWithAsync:
         comparer: ('T -> 'T -> #Task<int>) -> source1: TaskSeq<'T> -> source2: TaskSeq<'T> -> Task<int>
 
+    static member fold:
+        folder: ('State -> 'T -> 'State) -> state: 'State -> source: TaskSeq<'T> -> Task<'State>
 
-    /// then computes<paramref name="f (... (f s i0)...) iN" />.
-    /// If the accumulator function <paramref name="folder" /> is asynchronous, consider using <see cref="TaskSeq.foldAsync" />.
-    /// argument of type <paramref name="'State" /> through the computation.  If the input function is <paramref name="f" /> and the elements are <paramref name="i0...iN" />
-    /// then computes <paramref name="f (... (f s i0)...) iN" />.
-    /// If the accumulator function <paramref name="folder" /> is asynchronous, consider using <see cref="TaskSeq.foldAsync" />.
-    /// </summary>
-    ///
-    /// <param name="folder">A function that updates the state with each element from the sequence.</param>
-    /// <param name="state">The initial state.</param>
-    /// <param name="source">The input sequence.</param>
-    /// <returns>The state object after the folding function is applied to each element of the sequence.</returns>
-    /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
-    static member fold: folder: ('State -> 'T -> 'State) -> state: 'State -> source: TaskSeq<'T> -> Task<'State>
-
-    /// <summary>
-    /// Applies the asynchronous function <paramref name="folder" /> to each element in the task sequence, threading an accumulator
-    /// argument of type <paramref name="'State" /> through the computation.  If the input function is <paramref name="f" /> and the elements are <paramref name="i0...iN" />
-    /// then computes <paramref name="f (... (f s i0)...) iN" />.
-    /// If the accumulator function <paramref name="folder" /> is synchronous, consider using <see cref="TaskSeq.fold" />.
-    /// </summary>
-    ///
-    /// <param name="folder">A function that updates the state with each element from the sequence.</param>
-    /// <param name="state">The initial state.</param>
-    /// <param name="source">The input sequence.</param>
-    /// <returns>The state object after the folding function is applied to each element of the sequence.</returns>
-    /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
     static member foldAsync:
-        folder: ('State -> 'T -> #Task<'State>) -> state: 'State -> source: TaskSeq<'T> -> Task<'State>
+        folder: ('State -> 'T -> Task<'State>) -> state: 'State -> source: TaskSeq<'T> -> Task<'State>
 
-    /// <summary>
-    /// Applies the function <paramref name="folder" /> to each element in the task sequence, threading an
-    /// accumulator of type <paramref name="'State" /> through the computation, for as long as
-    /// <paramref name="predicate" /> returns <c>true</c>. The predicate is evaluated against the current
-    /// state and next element before that element is folded in; once it returns <c>false</c> the element
-    /// is not folded, iteration stops, and no further elements of the input are enumerated.
-    /// If either function is asynchronous, consider using <see cref="TaskSeq.foldWhileAsync" />.
-    /// </summary>
-    ///
-    /// <param name="predicate">A function that, given the current state and next element, returns <c>true</c> to keep folding or <c>false</c> to stop.</param>
-    /// <param name="folder">A function that updates the state with each element from the sequence.</param>
-    /// <param name="state">The initial state.</param>
-    /// <param name="source">The input sequence.</param>
-    /// <returns>The state object after iteration halted, or after the whole sequence was consumed.</returns>
-    /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
     static member foldWhile:
         predicate: ('State -> 'T -> bool) ->
         folder: ('State -> 'T -> 'State) ->
@@ -1933,63 +1894,24 @@ type TaskSeq =
         source: TaskSeq<'T> ->
             Task<'State>
 
-    /// <summary>
-    /// Applies the asynchronous function <paramref name="folder" /> to each element in the task sequence,
-    /// threading an accumulator of type <paramref name="'State" /> through the computation, for as long as
-    /// the asynchronous <paramref name="predicate" /> returns <c>true</c>. The predicate is evaluated
-    /// against the current state and next element before that element is folded in; once it returns
-    /// <c>false</c> the element is not folded, iteration stops, and no further elements of the input are
-    /// enumerated.
-    /// If both functions are synchronous, consider using <see cref="TaskSeq.foldWhile" />.
-    /// </summary>
-    ///
-    /// <param name="predicate">An async function that, given the current state and next element, returns <c>true</c> to keep folding or <c>false</c> to stop.</param>
-    /// <param name="folder">An async function that updates the state with each element from the sequence.</param>
-    /// <param name="state">The initial state.</param>
-    /// <param name="source">The input sequence.</param>
-    /// <returns>The state object after iteration halted, or after the whole sequence was consumed.</returns>
-    /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
     static member foldWhileAsync:
-        predicate: ('State -> 'T -> #Task<bool>) ->
-        folder: ('State -> 'T -> #Task<'State>) ->
+        predicate: ('State -> 'T -> Task<bool>) ->
+        folder: ('State -> 'T -> Task<'State>) ->
         state: 'State ->
         source: TaskSeq<'T> ->
             Task<'State>
 
-    /// <summary>
-    /// Like <see cref="TaskSeq.fold" />, but returns the sequence of intermediate results and the final result.
-    /// The first element of the output sequence is always the initial state. If the input task sequence
-    /// has <c>N</c> elements, the output task sequence has <c>N + 1</c> elements.
-    /// If the folder function <paramref name="folder" /> is asynchronous, consider using <see cref="TaskSeq.scanAsync" />.
-    /// </summary>
-    ///
-    /// <param name="folder">A function that updates the state with each element from the sequence.</param>
-    /// <param name="state">The initial state.</param>
-    /// <param name="source">The input sequence.</param>
-    /// <returns>A task sequence of states, starting with the initial state and applying the folder to each element.</returns>
-    /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
-    static member scan: folder: ('State -> 'T -> 'State) -> state: 'State -> source: TaskSeq<'T> -> TaskSeq<'State>
+    static member scan:
+        folder: ('State -> 'T -> 'State) -> state: 'State -> source: TaskSeq<'T> -> TaskSeq<'State>
 
-    /// <summary>
-    /// Like <see cref="TaskSeq.foldAsync" />, but returns the sequence of intermediate results and the final result.
-    /// The first element of the output sequence is always the initial state. If the input task sequence
-    /// has <c>N</c> elements, the output task sequence has <c>N + 1</c> elements.
-    /// If the folder function <paramref name="folder" /> is synchronous, consider using <see cref="TaskSeq.scan" />.
-    /// </summary>
-    ///
-    /// <param name="folder">A function that updates the state with each element from the sequence.</param>
-    /// <param name="state">The initial state.</param>
-    /// <param name="source">The input sequence.</param>
-    /// <returns>A task sequence of states, starting with the initial state and applying the folder to each element.</returns>
-    /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
     static member scanAsync:
         folder: ('State -> 'T -> #Task<'State>) -> state: 'State -> source: TaskSeq<'T> -> TaskSeq<'State>
 
+
     /// <summary>
-    /// Applies the function <paramref name="mapping" /> to each element of the task sequence, threading an accumulator
-    /// argument through the computation, while also generating a new mapped element for each input element.
-    /// If the input function is <paramref name="f" /> and the elements are <paramref name="i0...iN" />, then
-    /// computes both the mapped results <paramref name="r0...rN" /> and the final state in a single pass.
+    /// Applies the function <paramref name="folder" /> to each element in the task sequence, threading an accumulator
+    /// argument of type <paramref name="'State" /> through the computation.  If the input function is <paramref name="f" /> and the elements are <paramref name="i0...iN" />
+    /// then computes both the mapped results <paramref name="r0...rN" /> and the final state in a single pass.
     /// The result is a pair of an array of mapped values and the final state.
     /// If the mapping function <paramref name="mapping" /> is asynchronous, consider using <see cref="TaskSeq.mapFoldAsync" />.
     /// </summary>
@@ -2017,7 +1939,7 @@ type TaskSeq =
     /// <returns>A task returning a pair of the array of mapped results and the final state.</returns>
     /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
     static member mapFoldAsync:
-        mapping: ('State -> 'T -> #Task<'Result * 'State>) ->
+        mapping: ('State -> 'T -> Task<'Result * 'State>) ->
         state: 'State ->
         source: TaskSeq<'T> ->
             Task<'Result[] * 'State>
@@ -2085,7 +2007,7 @@ type TaskSeq =
     /// <returns>The final state value after applying the reduction function to all elements.</returns>
     /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
     /// <exception cref="T:ArgumentException">Thrown when the input task sequence is empty.</exception>
-    static member reduceAsync: folder: ('T -> 'T -> #Task<'T>) -> source: TaskSeq<'T> -> Task<'T>
+    static member reduceAsync: folder: ('T -> 'T -> Task<'T>) -> source: TaskSeq<'T> -> Task<'T>
 
     /// <summary>
     /// Applies a key-generating function to each element of a task sequence and yields a sequence of unique keys
@@ -2122,7 +2044,7 @@ type TaskSeq =
     /// <returns>A task returning an array of <c>(key, elements[])</c> pairs.</returns>
     /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
     static member groupByAsync:
-        projection: ('T -> #Task<'Key>) -> source: TaskSeq<'T> -> Task<('Key * 'T[])[]> when 'Key: equality
+        projection: ('T -> Task<'Key>) -> source: TaskSeq<'T> -> Task<('Key * 'T[])[]> when 'Key: equality
 
     /// <summary>
     /// Applies a key-generating function to each element of a task sequence and returns a task with an array of
@@ -2157,7 +2079,7 @@ type TaskSeq =
     /// <returns>A task returning an array of <c>(key, count)</c> pairs.</returns>
     /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
     static member countByAsync:
-        projection: ('T -> #Task<'Key>) -> source: TaskSeq<'T> -> Task<('Key * int)[]> when 'Key: equality
+        projection: ('T -> Task<'Key>) -> source: TaskSeq<'T> -> Task<('Key * int)[]> when 'Key: equality
 
     /// <summary>
     /// Splits the task sequence into two arrays: those for which the given predicate returns <c>true</c>,
@@ -2192,7 +2114,7 @@ type TaskSeq =
     /// <param name="source">The input task sequence.</param>
     /// <returns>A task returning a tuple of two arrays: <c>(trueItems, falseItems)</c>.</returns>
     /// <exception cref="T:ArgumentNullException">Thrown when the input task sequence is null.</exception>
-    static member partitionAsync: predicate: ('T -> #Task<bool>) -> source: TaskSeq<'T> -> Task<'T[] * 'T[]>
+    static member partitionAsync: predicate: ('T -> Task<bool>) -> source: TaskSeq<'T> -> Task<'T[] * 'T[]>
 
     /// <summary>
     /// Return a new task sequence with a new item inserted before the given index.
