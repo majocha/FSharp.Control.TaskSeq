@@ -2,6 +2,7 @@ namespace FSharp.Control
 
 open System
 open System.Threading.Tasks
+open Microsoft.FSharp.Control
 
 [<AutoOpen>]
 module ValueTaskExtensions =
@@ -35,27 +36,27 @@ module ValueTask =
 
 module Task =
     let inline fromResult (value: 'U) : Task<'U> = Task.FromResult value
-    let inline ofAsync (async: Async<'T>) = task { return! async }
-    let inline ofTask (task': Task) = task { do! task' }
+    let inline ofAsync (async: Async<'T>) = runtimeTask { return! async }
+    let inline ofTask (task': Task) = runtimeTask { do! task' }
     let inline apply (func: _ -> _) = func >> Task.FromResult
     let inline toAsync (task: Task<'T>) = Async.AwaitTask task
     let inline toValueTask (task: Task<'T>) = ValueTask<'T> task
-    let inline ofValueTask (valueTask: ValueTask<'T>) = task { return! valueTask }
+    let inline ofValueTask (valueTask: ValueTask<'T>) = runtimeTask { return! valueTask }
 
     let inline ignore (task: Task<'T>) =
-        TaskBuilder.task {
+        runtimeTask {
             // ensure the task is awaited
             let! _ = task
             return ()
         }
         :> Task
 
-    let inline map mapper (task: Task<'T>) : Task<'U> = TaskBuilder.task {
+    let inline map mapper (task: Task<'T>) : Task<'U> = runtimeTask {
         let! result = task
         return mapper result
     }
 
-    let inline bind binder (task: Task<'T>) : Task<'U> = TaskBuilder.task {
+    let inline bind (binder: 'T -> Task<'U>) (task: Task<'T>) : Task<'U> = runtimeTask {
         let! t = task
         return! binder t
     }
@@ -63,7 +64,7 @@ module Task =
 module Async =
     let inline ofTask (task: Task<'T>) = Async.AwaitTask task
     let inline ofUnitTask (task: Task) = Async.AwaitTask task
-    let inline toTask (async: Async<'T>) = task { return! async }
+    let inline toTask (async: Async<'T>) = runtimeTask { return! async }
 
     let inline ignore (async: Async<'T>) = Async.Ignore async
 

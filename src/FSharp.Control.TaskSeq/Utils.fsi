@@ -83,7 +83,7 @@ module Task =
     val inline map: mapper: ('T -> 'U) -> task: Task<'T> -> Task<'U>
 
     /// Bind a Task<'T>
-    val inline bind: binder: ('T -> #Task<'U>) -> task: Task<'T> -> Task<'U>
+    val inline bind: binder: ('T -> Task<'U>) -> task: Task<'T> -> Task<'U>
 
 module Async =
 

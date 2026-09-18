@@ -4,6 +4,7 @@ open System.Collections.Generic
 open System.Threading
 open System.Threading.Channels
 open System.Threading.Tasks
+open Microsoft.FSharp.Control
 
 // Just for convenience
 module Internal = TaskSeqInternal
@@ -18,7 +19,7 @@ module TaskSeqExtensions =
             if obj.ReferenceEquals(source, null) then
                 nullArg (nameof source)
 
-            task {
+            runtimeTask {
                 use e = source.GetAsyncEnumerator(System.Threading.CancellationToken.None)
                 let mutable acc = Unchecked.defaultof< ^T>
 
@@ -32,7 +33,7 @@ module TaskSeqExtensions =
             if obj.ReferenceEquals(source, null) then
                 nullArg (nameof source)
 
-            task {
+            runtimeTask {
                 use e = source.GetAsyncEnumerator(System.Threading.CancellationToken.None)
                 let mutable acc = Unchecked.defaultof< ^U>
 
@@ -46,7 +47,7 @@ module TaskSeqExtensions =
             if obj.ReferenceEquals(source, null) then
                 nullArg (nameof source)
 
-            task {
+            runtimeTask {
                 use e = source.GetAsyncEnumerator(System.Threading.CancellationToken.None)
                 let mutable acc = Unchecked.defaultof< ^U>
 
@@ -61,7 +62,7 @@ module TaskSeqExtensions =
             if obj.ReferenceEquals(source, null) then
                 nullArg (nameof source)
 
-            task {
+            runtimeTask {
                 use e = source.GetAsyncEnumerator(System.Threading.CancellationToken.None)
                 let mutable acc = Unchecked.defaultof< ^T>
                 let mutable count = 0
@@ -80,7 +81,7 @@ module TaskSeqExtensions =
             if obj.ReferenceEquals(source, null) then
                 nullArg (nameof source)
 
-            task {
+            runtimeTask {
                 use e = source.GetAsyncEnumerator(System.Threading.CancellationToken.None)
                 let mutable acc = Unchecked.defaultof< ^U>
                 let mutable count = 0
@@ -99,7 +100,7 @@ module TaskSeqExtensions =
             if obj.ReferenceEquals(source, null) then
                 nullArg (nameof source)
 
-            task {
+            runtimeTask {
                 use e = source.GetAsyncEnumerator(System.Threading.CancellationToken.None)
                 let mutable acc = Unchecked.defaultof< ^U>
                 let mutable count = 0
@@ -185,7 +186,7 @@ type TaskSeq private () =
         Internal.checkNonNull (nameof writer) writer
         Internal.checkNonNull (nameof source) source
 
-        task {
+        runtimeTask {
             try
                 use e = source.GetAsyncEnumerator CancellationToken.None
 
@@ -260,7 +261,7 @@ type TaskSeq private () =
 
         taskSeq {
             for c in source do
-                let! c = task { return! c }
+                let! c = runtimeTask { return! c }
                 yield c
         }
 
