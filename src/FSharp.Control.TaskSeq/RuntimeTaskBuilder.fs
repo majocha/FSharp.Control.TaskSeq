@@ -33,10 +33,6 @@ open InternalHelpers
 
 type RuntimeTaskBuilder() =
 
-    member inline this.ReturnFrom(source) = source
-
-    member inline _.Bind(source, continuation) = continuation source
-
     member inline _.Delay([<InlineIfLambda>] generator: unit -> 'T) : unit -> 'T = generator
 
     member inline _.Run([<InlineIfLambda>] code: unit -> 'T) : Task<'T> =
@@ -78,8 +74,35 @@ type RuntimeTaskBuilder() =
 
     member inline _.MergeSources(left, right) = struct(left, right)
 
+    member inline _.Source(sequence: seq<'T>) = sequence
+    member inline _.Source(sequence: IAsyncEnumerable<'T>) = sequence
+    member inline _.Source(task: Task<'T>) = task
+    member inline _.Source(task: Task) = task
+    member inline _.Source(task: ValueTask<'T>) = task
+    member inline _.Source(task: ValueTask) = task
+    member inline _.Source(computation: Async<'T>) = Async.StartImmediateAsTask computation
+
+    member inline _.Bind(task: Task<'T>, [<InlineIfLambda>] continuation) =
+        task |> AsyncHelpers.Await |> continuation
+    member inline _.Bind(task: Task, [<InlineIfLambda>] continuation) =
+        task |> AsyncHelpers.Await |> continuation
+    member inline _.Bind(task: ValueTask<'T>, [<InlineIfLambda>] continuation) =
+        task |> AsyncHelpers.Await |> continuation
+    member inline _.Bind(task: ValueTask, [<InlineIfLambda>] continuation) =
+        task |> AsyncHelpers.Await |> continuation
+
+    member inline _.ReturnFrom(source: Task<'T>) = AsyncHelpers.Await source
+    member inline _.ReturnFrom(source: Task) = AsyncHelpers.Await source
+    member inline _.ReturnFrom(source: ValueTask<'T>) = AsyncHelpers.Await source
+    member inline _.ReturnFrom(source: ValueTask) = AsyncHelpers.Await source
+
+    member inline _.Bind(awaiter: Awaiter<_, _>, [<InlineIfLambda>] continuation) =
+        if not (Awaiter.isCompleted awaiter) then
+            AsyncHelpers.AwaitAwaiter awaiter
+        Awaiter.getResult awaiter |> continuation
+
 [<AutoOpen>]
-module RuntimeTask = 
+module RuntimeTask =
 
     let runtimeTask = RuntimeTaskBuilder()
 
@@ -91,23 +114,8 @@ module RuntimeTask =
     let backgroundRuntimeTask = BackgroundTaskBuilder()
 
 [<AutoOpen>]
-module RuntimeTaskExtensionsLowPriority =
-    open InternalHelpers
-    type RuntimeTaskBuilder with
-        member inline _.Source(awaitable: Awaitable<_, _, _>) =
-            let awaiter = Awaitable.getAwaiter awaitable
-            if not (Awaiter.isCompleted awaiter) then
-                AsyncHelpers.AwaitAwaiter awaiter       
-            Awaiter.getResult awaiter
-
-[<AutoOpen>]
 module RuntimeTaskExtensions =
     open InternalHelpers
     type RuntimeTaskBuilder with
-        member inline _.Source(sequence: seq<'T>) = sequence // sketchy
-        member inline _.Source(task: Task) = AsyncHelpers.Await task
-        member inline _.Source(task: ValueTask) = AsyncHelpers.Await task
-        member inline _.Source(sequence: IAsyncEnumerable<'T>) = sequence // sketchy
-        member inline _.Source(task: Task<'T>) = AsyncHelpers.Await task
-        member inline _.Source(task: ValueTask<'T>) = AsyncHelpers.Await task
-        member inline _.Source(computation: Async<'T>) = AsyncHelpers.Await(Async.StartImmediateAsTask computation)
+        member inline _.Source(awaitable: Awaitable<_, _, _>) = Awaitable.getAwaiter awaitable
+
