@@ -13,6 +13,44 @@ open Microsoft.FSharp.Core.CompilerServices
 // the proper type from 0.4.0 onwards, see FSI file
 type TaskSeq<'T> = IAsyncEnumerable<'T>
 
+module TasklikeHelpers =
+
+    /// A structure that looks like an Awaiter
+    type Awaiter<'Awaiter, 'TResult
+        when 'Awaiter :> ICriticalNotifyCompletion
+        and 'Awaiter: (member get_IsCompleted: unit -> bool)
+        and 'Awaiter: (member GetResult: unit -> 'TResult)> = 'Awaiter
+
+    type Awaitable<'Awaitable, 'Awaiter, 'TResult
+        when 'Awaitable: (member GetAwaiter: unit -> Awaiter<'Awaiter, 'TResult>)> = 'Awaitable
+
+    module Awaiter =
+        let inline isCompleted (awaiter: Awaiter<_, _>) = awaiter.get_IsCompleted ()
+        let inline getResult (awaiter: Awaiter<_, _>) = awaiter.GetResult()
+        let inline onCompleted (awaiter: Awaiter<_, _>) continuation = awaiter.OnCompleted continuation
+        let inline unsafeOnCompleted (awaiter: Awaiter<_, _>) continuation = awaiter.UnsafeOnCompleted continuation
+
+    module Awaitable =
+        let inline getAwaiter (awaitable: Awaitable<_, _, _>) = awaitable.GetAwaiter()
+
+open TasklikeHelpers
+
+module RuntimeAsyncBuilderHelpers =
+
+    // A delegate to unify dissimilar builder source types, this allows us to have no additional Bind or MergeSources overloads.
+    // The delegate's invocation is inlined, so this is zero cost.
+    type Started<'T> = delegate of unit -> 'T
+
+    [<NoEagerConstraintApplication>]
+    let inline startAwaitable awaitable =
+        // Make sure the delegate captures only started awaitables to make MergeSources concurrent.
+        let awaiter = Awaitable.getAwaiter awaitable
+        Started(fun () ->
+            AsyncHelpers.UnsafeAwaitAwaiter awaiter
+            Awaiter.getResult awaiter)
+
+open RuntimeAsyncBuilderHelpers
+
 type TaskSeqBuilder() =
 
     member inline _.Zero() = Seq.empty
@@ -66,44 +104,31 @@ type TaskSeqBuilder() =
     member inline this.YieldFrom(source: IAsyncEnumerable<'T>) =
         this.For(source, fun value -> this.Yield value)
 
-    // NOTE: no concrete Bind for non-generic Task/ValueTask: having them alongside the
-    // generic ones broke type inference for `use!` (and other unit-continuations).
-    // They are handled by the SRTP overload in TaskSeqAwaitableExtensions below.
-    member inline _.Bind(source: Task<'U>, [<InlineIfLambda>] continuation: 'U -> seq<'T>) =
-        continuation (AsyncHelpers.Await source)
-
-    member inline _.Bind(source: ValueTask<'U>, [<InlineIfLambda>] continuation: 'U -> seq<'T>) =
-        continuation (AsyncHelpers.Await source)
-
-    member inline _.Bind(source: Async<'U>, [<InlineIfLambda>] continuation: 'U -> seq<'T>) =
-        continuation (AsyncHelpers.Await(Async.StartImmediateAsTask source))
-
-    member inline this.WhileAsync([<InlineIfLambda>] condition: unit -> ValueTask<bool>, [<InlineIfLambda>] body) =
-        this.While((fun () -> AsyncHelpers.Await(condition ())), body)
+    member inline _.Bind([<InlineIfLambda>] await: Started<'T>, [<InlineIfLambda>] continuation: 'T -> 'U seq) =
+        await.Invoke() |> continuation
 
     member inline _.Run([<InlineIfLambda>] recipe: unit -> seq<'T>) : IAsyncEnumerable<'T> =
         StateMachineHelpers.__runtimeAsyncSequence recipe
 
+    member inline _.Source(task: Task<'T>) = Started(fun () -> AsyncHelpers.Await task)
+    member inline _.Source(task: Task) = Started(fun () -> AsyncHelpers.Await task)
+    member inline _.Source(task: ValueTask<'T>) = Started(fun () -> AsyncHelpers.Await task)
+    member inline _.Source(task: ValueTask) = Started(fun () -> AsyncHelpers.Await task)
+
 [<AutoOpen>]
-module TaskSeqAwaitableExtensions =
+module TaskSeqAwaitableExtensionsLowPriority =
 
     type TaskSeqBuilder with
-        [<NoEagerConstraintApplication>]
-        member inline _.Bind< ^TaskLike, 'T, 'U, ^Awaiter
-            when ^TaskLike: (member GetAwaiter: unit -> ^Awaiter)
-            and ^Awaiter :> ICriticalNotifyCompletion
-            and ^Awaiter: (member get_IsCompleted: unit -> bool)
-            and ^Awaiter: (member GetResult: unit -> 'T)>
-            (task: ^TaskLike, [<InlineIfLambda>] continuation: 'T -> seq<'U>)
-            : seq<'U> =
-            let awaiter = (^TaskLike: (member GetAwaiter: unit -> ^Awaiter) task)
+        member inline _.Source(awaitable: Awaitable<_, _, _>) = startAwaitable awaitable
 
-            if not (^Awaiter: (member get_IsCompleted: unit -> bool) awaiter) then
-                AsyncHelpers.UnsafeAwaitAwaiter awaiter
+[<AutoOpen>]
+module TaskSeqAwaitableExtensionsHighPriority =
 
-            continuation (^Awaiter: (member GetResult: unit -> 'T) awaiter)
-
-open TaskSeqAwaitableExtensions
+    type TaskSeqBuilder with
+        member inline _.Source(source: seq<'T>) = source
+        member inline _.Source(source: IAsyncEnumerable<'T>) = source
+        member inline _.Source(task: #Task<_>) = startAwaitable task
+        member inline _.Source(computation: Async<_>) = Started(fun () -> AsyncHelpers.Await(Async.StartImmediateAsTask computation))
 
 [<AutoOpen>]
 module TaskSeqBuilder =

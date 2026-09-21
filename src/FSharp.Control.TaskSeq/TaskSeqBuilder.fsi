@@ -25,8 +25,6 @@ type TaskSeqBuilder =
     member inline For: source: seq<'U> * body: ('U -> seq<'T>) -> seq<'T>
     member inline For: source: IAsyncEnumerable<'U> * body: ('U -> seq<'T>) -> seq<'T>
     member inline While: guard: (unit -> bool) * body: (unit -> seq<'T>) -> seq<'T>
-    /// Used by `For`. Unclear if `while!` (from F# 8.0) hits this
-    member inline WhileAsync: condition: (unit -> ValueTask<bool>) * body: (unit -> seq<'T>) -> seq<'T>
     member inline TryFinally: body: (unit -> seq<'T>) * compensation: (unit -> unit) -> seq<'T>
     member inline TryFinallyAsync: body: (unit -> seq<'T>) * compensation: (unit -> Task) -> seq<'T>
     member inline TryWith: body: (unit -> seq<'T>) * handler: (exn -> seq<'T>) -> seq<'T>
