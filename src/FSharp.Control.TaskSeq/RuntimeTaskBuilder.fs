@@ -66,10 +66,13 @@ type RuntimeAsyncBuilder() =
     member inline _.Combine(first, [<InlineIfLambda>] second) =
         first()
         second()
-    member inline _.TryWith([<InlineIfLambda>] body: unit -> 'T, [<InlineIfLambda>] handler: exn -> 'T) =
+
+    member inline _.TryWith([<InlineIfLambda>] body, [<InlineIfLambda>] handler) =
         try body() with error -> handler error
-    member inline _.TryFinally([<InlineIfLambda>] body: unit -> 'T, [<InlineIfLambda>] compensation: unit -> unit) =
+
+    member inline _.TryFinally([<InlineIfLambda>] body, [<InlineIfLambda>] compensation) =
         try body() finally compensation()
+
     member inline _.Using(resource, [<InlineIfLambda>] body) =
         try
             body resource
@@ -79,21 +82,22 @@ type RuntimeAsyncBuilder() =
             | :? IDisposable as disposable -> disposable.Dispose()
             | _ -> ()
 
-    member inline _.While(guard: unit -> bool, [<InlineIfLambda>] body: unit -> unit) =
+    member inline _.While(guard, [<InlineIfLambda>] body) =
         while guard() do body()
 
-    member inline _.For(sequence: seq<'T>, [<InlineIfLambda>] body: 'T -> unit) =
+    member inline _.For(sequence, [<InlineIfLambda>] body) =
         for item in sequence do body item
 
-    member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body: 'T -> unit) =
+    member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body) =
         this.Using(sequence.GetAsyncEnumerator(), fun enumerator ->
             while enumerator.MoveNextAsync() |> AsyncHelpers.Await do
                 body enumerator.Current)
 
-    member inline _.Bind([<InlineIfLambda>] awaited: Started<'T>, [<InlineIfLambda>] continuation) =
-        awaited.Invoke() |> continuation
+    member inline _.Bind([<InlineIfLambda>] await: Started<'T>, [<InlineIfLambda>] continuation) =
+        await.Invoke() |> continuation
 
-    member inline _.ReturnFrom([<InlineIfLambda>]  awaited: Started<'T>) = awaited.Invoke()
+    member inline _.ReturnFrom([<InlineIfLambda>]  await: Started<'T>) =
+        await.Invoke()
 
     member inline _.MergeSources([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Started<'B>) =
         Started(fun () ->
@@ -141,4 +145,5 @@ module RuntimeTask =
 [<AutoOpen>]
 module RuntimeAsyncBuilderAwaitableExtensions =
     type RuntimeAsyncBuilder with
+        // Bind tasklike awaitables not matching any of the above source types, with lower priority. 
         member inline _.Source(awaitable) = startAwaitable awaitable
