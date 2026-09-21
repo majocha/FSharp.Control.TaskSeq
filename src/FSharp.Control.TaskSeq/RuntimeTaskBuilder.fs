@@ -34,17 +34,6 @@ open TasklikeHelpers
 
 module RuntimeAsyncBuilderHelpers =
 
-    [<RequireQualifiedAccess>]
-    module Cancellation =
-        // AsyncLocal is a natural fit to store the cancellation token and make it available across suspensions
-        // without explicitly threading the state through the builder.
-        let token = AsyncLocal<CancellationToken>()
-
-        let inline setToken ct = token.Value <- ct
-
-        let inline check() =
-            token.Value.ThrowIfCancellationRequested()
-
     // A delegate to unify dissimilar builder source types, this allows us to have no additional Bind or MergeSources overloads.
     // The delegate's invocation is inlined, so this is zero cost.
     type Started<'T> = delegate of unit -> 'T
@@ -54,7 +43,6 @@ module RuntimeAsyncBuilderHelpers =
         // Make sure the delegate captures only started awaitables to make MergeSources concurrent.
         let awaiter = Awaitable.getAwaiter awaitable
         Started(fun () ->
-            Cancellation.check()
             AsyncHelpers.UnsafeAwaitAwaiter awaiter
             Awaiter.getResult awaiter)
 
@@ -64,21 +52,9 @@ module RuntimeAsyncBuilder =
     let inline isAlreadyBackground () =
         isNull SynchronizationContext.Current && obj.ReferenceEquals(TaskScheduler.Current, TaskScheduler.Default)
 
-    // This will get inlined into the 
-    let inline runImpl([<InlineIfLambda>] body: unit -> 'T) ct =
-        Cancellation.setToken ct
-        body()
-
-    let inline runImplNoCancellation([<InlineIfLambda>] body: unit -> 'T) =
-        Cancellation.setToken CancellationToken.None
-        body()
-
 type RuntimeAsyncBuilder() =
 
-    member inline _.Delay([<InlineIfLambda>] generator: unit -> 'T) =
-        fun () ->
-            Cancellation.check ()
-            generator()
+    member inline _.Delay([<InlineIfLambda>] generator: unit -> 'T) = generator
 
     member inline _.Zero() = ()
     member inline _.Return(value: 'T) = value
@@ -110,7 +86,7 @@ type RuntimeAsyncBuilder() =
         for item in sequence do body item
 
     member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body: 'T -> unit) =
-        this.Using(sequence.GetAsyncEnumerator(Cancellation.token.Value), fun enumerator ->
+        this.Using(sequence.GetAsyncEnumerator(), fun enumerator ->
             while enumerator.MoveNextAsync() |> AsyncHelpers.Await do
                 body enumerator.Current)
 
@@ -137,7 +113,7 @@ type RuntimeAsyncBuilder() =
 
     // Bind also cold-start async computations
     member inline _.Source(computation: Async<'T>) =
-        let task = Async.StartImmediateAsTask(computation, Cancellation.token.Value)
+        let task = Async.StartImmediateAsTask computation
         Started(fun () -> task |> AsyncHelpers.Await)
 
 [<AutoOpen>]
@@ -148,7 +124,7 @@ module RuntimeTask =
     type RuntimeTaskBuilder() =
         inherit RuntimeAsyncBuilder()
         member inline _.Run([<InlineIfLambda>] code) : Task<'T> =
-            __runtimeAsyncReturn( runImplNoCancellation code)
+            __runtimeAsyncReturn(code())
 
     let runtimeTask = RuntimeTaskBuilder()
 
@@ -156,9 +132,9 @@ module RuntimeTask =
         inherit RuntimeAsyncBuilder()
         member inline _.Run([<InlineIfLambda>] code: unit -> 'T) : Task<'T> =
             if isAlreadyBackground() then
-                __runtimeAsyncReturn(runImplNoCancellation code)
+                __runtimeAsyncReturn(code())
             else
-            Task.Run<'T>(fun () -> __runtimeAsyncReturn (runImplNoCancellation code))
+            Task.Run<'T>(fun () -> __runtimeAsyncReturn (code()))
 
     let backgroundRuntimeTask = BackgroundRuntimeTaskBuilder()
 
