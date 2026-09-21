@@ -10,7 +10,7 @@ open Microsoft.FSharp.Core.CompilerServices
 open Microsoft.FSharp.Core.LanguagePrimitives.IntrinsicOperators
 open Microsoft.FSharp.Collections
 
-module InternalHelpers =
+module TasklikeHelpers =
 
     /// A structure that looks like an Awaiter
     type Awaiter<'Awaiter, 'TResult
@@ -18,7 +18,8 @@ module InternalHelpers =
         and 'Awaiter: (member get_IsCompleted: unit -> bool)
         and 'Awaiter: (member GetResult: unit -> 'TResult)> = 'Awaiter
 
-    type Awaitable<'Awaitable, 'Awaiter, 'TResult when 'Awaitable: (member GetAwaiter: unit -> Awaiter<'Awaiter, 'TResult>)> = 'Awaitable
+    type Awaitable<'Awaitable, 'Awaiter, 'TResult
+        when 'Awaitable: (member GetAwaiter: unit -> Awaiter<'Awaiter, 'TResult>)> = 'Awaitable
 
     module Awaiter =
         let inline isCompleted (awaiter: Awaiter<_, _>) = awaiter.get_IsCompleted ()
@@ -29,14 +30,55 @@ module InternalHelpers =
     module Awaitable =
         let inline getAwaiter (awaitable: Awaitable<_, _, _>) = awaitable.GetAwaiter()
 
-open InternalHelpers
+open TasklikeHelpers
 
-type RuntimeTaskBuilder() =
+module RuntimeAsyncBuilderHelpers =
 
-    member inline _.Delay([<InlineIfLambda>] generator: unit -> 'T) : unit -> 'T = generator
+    [<RequireQualifiedAccess>]
+    module Cancellation =
+        // AsyncLocal is a natural fit to store the cancellation token and make it available across suspensions
+        // without explicitly threading the state through the builder.
+        let token = AsyncLocal<CancellationToken>()
 
-    member inline _.Run([<InlineIfLambda>] code: unit -> 'T) : Task<'T> =
-        __runtimeAsyncReturn (code())
+        let inline setToken ct = token.Value <- ct
+
+        let inline check() =
+            token.Value.ThrowIfCancellationRequested()
+
+    // A delegate to unify dissimilar builder source types, this allows us to have no additional Bind or MergeSources overloads.
+    // The delegate's invocation is inlined, so this is zero cost.
+    type Started<'T> = delegate of unit -> 'T
+
+    [<NoEagerConstraintApplication>]
+    let inline startAwaitable awaitable =
+        // Make sure the delegate captures only started awaitables to make MergeSources concurrent.
+        let awaiter = Awaitable.getAwaiter awaitable
+        Started(fun () ->
+            Cancellation.check()
+            AsyncHelpers.UnsafeAwaitAwaiter awaiter
+            Awaiter.getResult awaiter)
+
+open RuntimeAsyncBuilderHelpers
+
+module RuntimeAsyncBuilder =
+    let inline isAlreadyBackground () =
+        isNull SynchronizationContext.Current && obj.ReferenceEquals(TaskScheduler.Current, TaskScheduler.Default)
+
+    // This will get inlined into the 
+    let inline runImpl([<InlineIfLambda>] body: unit -> 'T) ct =
+        Cancellation.setToken ct
+        body()
+
+    let inline runImplNoCancellation([<InlineIfLambda>] body: unit -> 'T) =
+        Cancellation.setToken CancellationToken.None
+        body()
+
+type RuntimeAsyncBuilder() =
+
+    member inline _.Delay([<InlineIfLambda>] generator: unit -> 'T) =
+        fun () ->
+            Cancellation.check ()
+            generator()
 
     member inline _.Zero() = ()
     member inline _.Return(value: 'T) = value
@@ -68,54 +110,59 @@ type RuntimeTaskBuilder() =
         for item in sequence do body item
 
     member inline this.For(sequence: IAsyncEnumerable<'T>, [<InlineIfLambda>] body: 'T -> unit) =
-        this.Using(sequence.GetAsyncEnumerator(), fun enumerator ->
+        this.Using(sequence.GetAsyncEnumerator(Cancellation.token.Value), fun enumerator ->
             while enumerator.MoveNextAsync() |> AsyncHelpers.Await do
                 body enumerator.Current)
 
-    member inline _.MergeSources(left, right) = struct(left, right)
+    member inline _.Bind([<InlineIfLambda>] awaited: Started<'T>, [<InlineIfLambda>] continuation) =
+        awaited.Invoke() |> continuation
 
-    member inline _.Source(sequence: seq<'T>) = sequence
+    member inline _.ReturnFrom([<InlineIfLambda>]  awaited: Started<'T>) = awaited.Invoke()
+
+    member inline _.MergeSources([<InlineIfLambda>] left: Started<'A>, [<InlineIfLambda>] right: Started<'B>) =
+        Started(fun () ->
+            let left = left.Invoke()
+            let right = right.Invoke()
+            struct (left, right))
+
+    // sources consumed by For method
+    member inline _.Source(sequence: 'T seq) = sequence
     member inline _.Source(sequence: IAsyncEnumerable<'T>) = sequence
-    member inline _.Source(task: Task<'T>) = task
-    member inline _.Source(task: Task) = task
-    member inline _.Source(task: ValueTask<'T>) = task
-    member inline _.Source(task: ValueTask) = task
-    member inline _.Source(computation: Async<'T>) = Async.StartImmediateAsTask computation
 
-    member inline _.Bind(task: Task<'T>, [<InlineIfLambda>] continuation) =
-        task |> AsyncHelpers.Await |> continuation
-    member inline _.Bind(task: Task, [<InlineIfLambda>] continuation) =
-        task |> AsyncHelpers.Await |> continuation
-    member inline _.Bind(task: ValueTask<'T>, [<InlineIfLambda>] continuation) =
-        task |> AsyncHelpers.Await |> continuation
-    member inline _.Bind(task: ValueTask, [<InlineIfLambda>] continuation) =
-        task |> AsyncHelpers.Await |> continuation
+    // Cannonical runtime async sources 
+    member inline _.Source(task: Task<'T>) = Started(fun () -> task |> AsyncHelpers.Await)
+    member inline _.Source(task: Task) = Started(fun () -> task |> AsyncHelpers.Await)
+    member inline _.Source(task: ValueTask<'T>) = Started(fun () -> task |> AsyncHelpers.Await)
+    member inline _.Source(task: ValueTask) = Started(fun () -> task |> AsyncHelpers.Await)
 
-    member inline _.ReturnFrom(source: Task<'T>) = AsyncHelpers.Await source
-    member inline _.ReturnFrom(source: Task) = AsyncHelpers.Await source
-    member inline _.ReturnFrom(source: ValueTask<'T>) = AsyncHelpers.Await source
-    member inline _.ReturnFrom(source: ValueTask) = AsyncHelpers.Await source
-
-    member inline _.Bind(awaiter: Awaiter<_, _>, [<InlineIfLambda>] continuation) =
-        if not (Awaiter.isCompleted awaiter) then
-            AsyncHelpers.AwaitAwaiter awaiter
-        Awaiter.getResult awaiter |> continuation
+    // Bind also cold-start async computations
+    member inline _.Source(computation: Async<'T>) =
+        let task = Async.StartImmediateAsTask(computation, Cancellation.token.Value)
+        Started(fun () -> task |> AsyncHelpers.Await)
 
 [<AutoOpen>]
 module RuntimeTask =
 
+    open RuntimeAsyncBuilder
+    
+    type RuntimeTaskBuilder() =
+        inherit RuntimeAsyncBuilder()
+        member inline _.Run([<InlineIfLambda>] code) : Task<'T> =
+            __runtimeAsyncReturn( runImplNoCancellation code)
+
     let runtimeTask = RuntimeTaskBuilder()
 
-    type BackgroundTaskBuilder() =
-        inherit RuntimeTaskBuilder()
+    type BackgroundRuntimeTaskBuilder() =
+        inherit RuntimeAsyncBuilder()
         member inline _.Run([<InlineIfLambda>] code: unit -> 'T) : Task<'T> =
-            Task.Run<'T>(fun () -> __runtimeAsyncReturn (code()))
+            if isAlreadyBackground() then
+                __runtimeAsyncReturn(runImplNoCancellation code)
+            else
+            Task.Run<'T>(fun () -> __runtimeAsyncReturn (runImplNoCancellation code))
 
-    let backgroundRuntimeTask = BackgroundTaskBuilder()
+    let backgroundRuntimeTask = BackgroundRuntimeTaskBuilder()
 
 [<AutoOpen>]
-module RuntimeTaskExtensions =
-    open InternalHelpers
-    type RuntimeTaskBuilder with
-        member inline _.Source(awaitable: Awaitable<_, _, _>) = Awaitable.getAwaiter awaitable
-
+module RuntimeAsyncBuilderAwaitableExtensions =
+    type RuntimeAsyncBuilder with
+        member inline _.Source(awaitable) = startAwaitable awaitable
