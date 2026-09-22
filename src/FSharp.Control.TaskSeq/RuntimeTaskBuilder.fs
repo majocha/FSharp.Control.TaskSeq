@@ -1,14 +1,12 @@
 namespace Microsoft.FSharp.Control
 
 open System
+open System.Collections.Generic
 open System.Runtime.CompilerServices
 open System.Threading
 open System.Threading.Tasks
-open System.Collections.Generic
-open Microsoft.FSharp.Core
+
 open Microsoft.FSharp.Core.CompilerServices
-open Microsoft.FSharp.Core.LanguagePrimitives.IntrinsicOperators
-open Microsoft.FSharp.Collections
 
 module TasklikeHelpers =
 
@@ -38,7 +36,6 @@ module RuntimeAsyncBuilderHelpers =
     // The delegate's invocation is inlined, so this is zero cost.
     type Started<'T> = delegate of unit -> 'T
 
-    [<NoEagerConstraintApplication>]
     let inline startAwaitable awaitable =
         // Make sure the delegate captures only started awaitables to make MergeSources concurrent.
         let awaiter = Awaitable.getAwaiter awaitable
