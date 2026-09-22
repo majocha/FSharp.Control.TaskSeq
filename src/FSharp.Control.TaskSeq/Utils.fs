@@ -56,7 +56,7 @@ module Task =
         return mapper result
     }
 
-    let inline bind (binder: 'T -> Task<'U>) (task: Task<'T>) : Task<'U> = runtimeTask {
+    let inline bind (binder: 'T -> #Task<'U>) (task: Task<'T>) : Task<'U> = runtimeTask {
         let! t = task
         return! binder t
     }

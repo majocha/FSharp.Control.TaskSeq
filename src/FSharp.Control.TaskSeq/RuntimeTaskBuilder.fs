@@ -105,20 +105,30 @@ type RuntimeAsyncBuilder() =
             let right = right.Invoke()
             struct (left, right))
 
-    // sources consumed by For method
-    member inline _.Source(sequence: 'T seq) = sequence
-    member inline _.Source(sequence: IAsyncEnumerable<'T>) = sequence
-
     // Cannonical runtime async sources 
     member inline _.Source(task: Task<'T>) = Started(fun () -> task |> AsyncHelpers.Await)
     member inline _.Source(task: Task) = Started(fun () -> task |> AsyncHelpers.Await)
     member inline _.Source(task: ValueTask<'T>) = Started(fun () -> task |> AsyncHelpers.Await)
     member inline _.Source(task: ValueTask) = Started(fun () -> task |> AsyncHelpers.Await)
 
-    // Bind also cold-start async computations
-    member inline _.Source(computation: Async<'T>) =
-        let task = Async.StartImmediateAsTask computation
-        Started(fun () -> task |> AsyncHelpers.Await)
+[<AutoOpen>]
+module RuntimeAsyncBuilderAwaitableExtensionsLowPriority =
+    type RuntimeAsyncBuilder with
+        // Bind tasklike awaitables not matching any of the above source types, with lower priority. 
+        member inline _.Source(awaitable) = startAwaitable awaitable
+
+[<AutoOpen>]
+module RuntimeAsyncBuilderAwaitableExtensionsHighPriority =
+    type RuntimeAsyncBuilder with
+        // sources consumed by For method
+        member inline _.Source(sequence: 'T seq) = sequence
+        member inline _.Source(sequence: IAsyncEnumerable<'T>) = sequence
+        // Bind task-derived types.
+        member inline _.Source(task: #Task<_>) = startAwaitable task
+        // Bind also cold-start async computations
+        member inline _.Source(computation: Async<'T>) =
+            let task = Async.StartImmediateAsTask computation
+            Started(fun () -> task |> AsyncHelpers.Await)
 
 [<AutoOpen>]
 module RuntimeTask =
@@ -141,9 +151,3 @@ module RuntimeTask =
             Task.Run<'T>(fun () -> __runtimeAsyncReturn (code()))
 
     let backgroundRuntimeTask = BackgroundRuntimeTaskBuilder()
-
-[<AutoOpen>]
-module RuntimeAsyncBuilderAwaitableExtensions =
-    type RuntimeAsyncBuilder with
-        // Bind tasklike awaitables not matching any of the above source types, with lower priority. 
-        member inline _.Source(awaitable) = startAwaitable awaitable
