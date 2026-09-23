@@ -66,16 +66,4 @@ Generates optimized IL code through resumable state machines, and comes with a c
     <Compile Include="AsyncExtensions.fsi" />
     <Compile Include="AsyncExtensions.fs" />
   </ItemGroup>
-
-  <ItemGroup>
-    <!--
-      Runtime-async requires the FSharp.Core built from dotnet/fsharp PR #20235
-      (provides __runtimeAsyncReturn and friends). The compiler itself is selected
-      through DotnetFscCompilerPath in Directory.Build.props.
-    -->
-    <Reference Include="FSharp.Core">
-      <HintPath>$(RuntimeAsyncBitsPath)\FSharp.Core\Release\net10.0\FSharp.Core.dll</HintPath>
-      <Private>true</Private>
-    </Reference>
-  </ItemGroup>
 </Project>

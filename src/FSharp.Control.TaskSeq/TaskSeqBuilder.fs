@@ -41,14 +41,6 @@ module RuntimeAsyncBuilderHelpers =
     // The delegate's invocation is inlined, so this is zero cost.
     type Started<'T> = delegate of unit -> 'T
 
-    [<NoEagerConstraintApplication>]
-    let inline startAwaitable awaitable =
-        // Make sure the delegate captures only started awaitables to make MergeSources concurrent.
-        let awaiter = Awaitable.getAwaiter awaitable
-        Started(fun () ->
-            AsyncHelpers.UnsafeAwaitAwaiter awaiter
-            Awaiter.getResult awaiter)
-
 open RuntimeAsyncBuilderHelpers
 
 type TaskSeqBuilder() =
@@ -119,7 +111,13 @@ type TaskSeqBuilder() =
 module TaskSeqAwaitableExtensionsLowPriority =
 
     type TaskSeqBuilder with
-        member inline _.Source(awaitable: Awaitable<_, _, _>) = startAwaitable awaitable
+        member inline _.Source(awaitable: Awaitable<_, _, _>) =
+            // Make sure to start outside of the delegate.
+            // MergeSources expect started sources to keep execution concurrent.
+            let awaiter = Awaitable.getAwaiter awaitable
+            Started(fun () ->
+                if not (Awaiter.isCompleted awaiter) then AsyncHelpers.UnsafeAwaitAwaiter awaiter
+                Awaiter.getResult awaiter)
 
 [<AutoOpen>]
 module TaskSeqAwaitableExtensionsHighPriority =
@@ -127,7 +125,7 @@ module TaskSeqAwaitableExtensionsHighPriority =
     type TaskSeqBuilder with
         member inline _.Source(source: seq<'T>) = source
         member inline _.Source(source: IAsyncEnumerable<'T>) = source
-        member inline _.Source(task: #Task<_>) = startAwaitable task
+        member inline _.Source(task: #Task<_>) = Started(fun () -> AsyncHelpers.Await task)
         member inline _.Source(computation: Async<_>) = Started(fun () -> AsyncHelpers.Await(Async.StartImmediateAsTask computation))
 
 [<AutoOpen>]
